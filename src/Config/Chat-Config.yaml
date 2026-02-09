@@ -1,0 +1,7 @@
+chat:
+  idle_timeout_ms: 900000        # 15 minutes
+  max_session_ms: 1800000        # 30 minutes
+  warning_before_ms: 60000       # 1 minute
+  backend_timeout_ms: 30000      # 30 seconds
+
+

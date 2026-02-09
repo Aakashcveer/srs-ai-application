@@ -367,6 +367,35 @@
 }
 
 
+.chat-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.chat-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0; /* ✅ required for ellipsis */
+}
+
+.chat-title {
+  flex: 1;
+  min-width: 0; /* ✅ required for ellipsis */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-actions {
+  flex-shrink: 0; /* ✅ icons never shrink or disappear */
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 
 
 

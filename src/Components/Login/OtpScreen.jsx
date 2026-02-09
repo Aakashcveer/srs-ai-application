@@ -1,18 +1,19 @@
 import React, { useState, useRef } from "react";
 import "./Login.css";
-import { verifyOtp } from "../../AWS/auth";
+import { verifyOtp, resendOtp } from "../../AWS/auth";
 
 const OtpScreen = ({ email, onSuccess, onBack }) => {
   const [otp, setOtp] = useState(["", "", "", "", "", "", "", ""]);
   const [loading, setLoading] = useState(false);
+  const [resending, setResending] = useState(false);
   const inputs = useRef([]);
 
   const handleChange = (value, index) => {
     if (value.length > 1) value = value.slice(-1);
 
-    const newOtp = [...otp];
-    newOtp[index] = value;
-    setOtp(newOtp);
+    const next = [...otp];
+    next[index] = value;
+    setOtp(next);
 
     if (value && index < otp.length - 1) {
       inputs.current[index + 1]?.focus();
@@ -33,21 +34,38 @@ const OtpScreen = ({ email, onSuccess, onBack }) => {
     }
   };
 
+  /* ===============================
+     VERIFY OTP
+  =============================== */
   const handleVerify = async () => {
     if (loading) return;
     setLoading(true);
 
     try {
       await verifyOtp(otp.join(""));
-
-      // ✅ REQUIRED: persist login state
       localStorage.setItem("isAuthenticated", "true");
-
-      onSuccess(); // redirect to Chat
+      onSuccess();
     } catch (err) {
-      alert(err.message || "Invalid OTP");
+      alert(err?.message || "Invalid OTP");
       setLoading(false);
     }
+  };
+
+  /* ===============================
+     RESEND OTP
+  =============================== */
+  const handleResend = async () => {
+    if (resending) return;
+    setResending(true);
+
+    try {
+      await resendOtp();
+      alert("OTP resent. Check inbox/spam.");
+    } catch (err) {
+      alert(err?.message || "Failed to resend OTP");
+    }
+
+    setResending(false);
   };
 
   return (
@@ -80,6 +98,14 @@ const OtpScreen = ({ email, onSuccess, onBack }) => {
           disabled={loading}
         >
           {loading ? "Verifying..." : "Verify & Login"}
+        </button>
+
+        <button
+          className="back-btn"
+          onClick={handleResend}
+          disabled={loading || resending}
+        >
+          {resending ? "Resending..." : "Resend OTP"}
         </button>
 
         <button className="back-btn" onClick={onBack} disabled={loading}>

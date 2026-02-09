@@ -9,22 +9,26 @@ const Login = ({ onAuthenticate }) => {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  // ✅ NEW: auto-login if session exists
+  /* ===============================
+     AUTO LOGIN (SAFE)
+  =============================== */
   useEffect(() => {
     const checkSession = async () => {
-      try {
-        const token = await getAccessToken();
-        if (token) {
-          onAuthenticate(); // 🔥 skip login screen
-        }
-      } catch {
-        // no active session → stay on login
+      const flag = localStorage.getItem("isAuthenticated") === "true";
+      if (!flag) return;
+
+      const token = await getAccessToken();
+      if (token) {
+        onAuthenticate();
       }
     };
 
     checkSession();
   }, [onAuthenticate]);
 
+  /* ===============================
+     SEND OTP
+  =============================== */
   const handleSendOtp = async () => {
     if (!email.trim()) {
       setError("Email is required");
@@ -35,10 +39,10 @@ const Login = ({ onAuthenticate }) => {
     setLoading(true);
 
     try {
-      await sendOtp(email);
+      await sendOtp(email.trim());
       setStep("otp");
     } catch (err) {
-      setError(err.message || "Failed to send OTP");
+      setError(err?.message || "Failed to send OTP");
     }
 
     setLoading(false);

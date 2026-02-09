@@ -41,9 +41,7 @@ const Sidebar = ({
 
   const filteredChats = search
     ? sortedChats.filter((c) =>
-        (c.title || "")
-          .toLowerCase()
-          .includes(search.trim().toLowerCase())
+        (c.title || "").toLowerCase().includes(search.trim().toLowerCase())
       )
     : sortedChats;
 
@@ -95,10 +93,7 @@ const Sidebar = ({
           />
 
           {search && (
-            <button
-              className="icon-btn clear-btn"
-              onClick={() => setSearch("")}
-            >
+            <button className="icon-btn clear-btn" onClick={() => setSearch("")}>
               ✖
             </button>
           )}
@@ -129,22 +124,27 @@ const Sidebar = ({
           >
             <div className="chat-left">
               <ChatIcon />
+
               {sidebarOpen && (
-                <span className="chat-title">
+                // ✅ Added title attribute so full text visible on hover
+                <span className="chat-title" title={chat.title || "New Chat"}>
                   {chat.title || "New Chat"}
                 </span>
               )}
             </div>
 
             {sidebarOpen && (
-              <div className="chat-right">
+              // ✅ Stop propagation here so icons never trigger chat open
+              <div
+                className="chat-actions"
+                onClick={(e) => e.stopPropagation()}
+              >
                 {onRename && (
                   <button
-                    className="icon-btn"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleRename(chat.id, chat.title);
-                    }}
+                    className="icon-btn chat-action-btn"
+                    onClick={() => handleRename(chat.id, chat.title)}
+                    aria-label="Rename"
+                    title="Rename"
                   >
                     <EditIcon />
                   </button>
@@ -152,11 +152,10 @@ const Sidebar = ({
 
                 {onDelete && (
                   <button
-                    className="icon-btn"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDelete(chat.id);
-                    }}
+                    className="icon-btn chat-action-btn"
+                    onClick={() => handleDelete(chat.id)}
+                    aria-label="Delete"
+                    title="Delete"
                   >
                     <DeleteIcon />
                   </button>
@@ -180,30 +179,19 @@ const Sidebar = ({
             className="profile-row"
             onClick={() => setProfileOpen(!profileOpen)}
           >
-            <div className="profile-avatar">
-              {user?.initial || "U"}
-            </div>
+            <div className="profile-avatar">{user?.initial || "U"}</div>
 
             <div className="profile-info">
-              <div className="profile-name">
-                {user?.name || "Your Name"}
-              </div>
-              <div className="profile-email">
-                {user?.email}
-              </div>
+              <div className="profile-name">{user?.name || "Your Name"}</div>
+              <div className="profile-email">{user?.email}</div>
             </div>
           </div>
 
           {profileOpen && (
             <div className="profile-dropdown">
-              <button className="dropdown-item">
-                Help & Support
-              </button>
+              <button className="dropdown-item">Help & Support</button>
 
-              <button
-                className="dropdown-item"
-                onClick={onLogout}
-              >
+              <button className="dropdown-item" onClick={onLogout}>
                 Sign out
               </button>
 
@@ -211,10 +199,7 @@ const Sidebar = ({
 
               <div className="theme-row">
                 <span>Theme</span>
-                <button
-                  className="icon-btn"
-                  onClick={toggleTheme}
-                >
+                <button className="icon-btn" onClick={toggleTheme}>
                   {theme === "dark" ? <SunIcon /> : <MoonIcon />}
                 </button>
               </div>

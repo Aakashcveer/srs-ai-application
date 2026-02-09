@@ -582,3 +582,360 @@ body.dark .reaction-btn span {
 .reaction-btn.active.down span {
   color: white !important;
 }
+
+
+
+
+
+.cw-attachment{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:6px 10px;
+  border:1px solid rgba(0,0,0,0.15);
+  border-radius:12px;
+  font-size: 12px;
+  max-width: 240px;
+}
+
+.cw-attachment-name{
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+
+.cw-attachment-remove{
+  background:transparent;
+  border:none;
+  cursor:pointer;
+}
+
+
+
+/* ===============================
+   Attachment chip (before send)
+=============================== */
+
+.cw-attachment {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.05);
+  padding: 6px 10px;
+  border-radius: 10px;
+  font-size: 13px;
+  max-width: 100%;
+  margin: 6px 0;
+}
+
+.dark .cw-attachment {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.cw-attachment-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+
+.cw-attachment-remove {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  opacity: 0.6;
+}
+
+.cw-attachment-remove:hover {
+  opacity: 1;
+}
+
+
+.chat-input-wrapper {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  width: 100%;
+}
+
+
+
+
+/* ===============================
+   ✅ Empty chat center welcome screen
+=============================== */
+.messages.messages-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.messages.messages-empty .welcome-screen {
+  height: auto; /* override your fixed height */
+  min-height: 0;
+  padding: 24px;
+}
+
+.messages.messages-empty .welcome-title {
+  font-size: 34px;
+  font-weight: 500;
+}
+
+/* ===============================
+   ✅ ChatGPT-like attachment tray (before send)
+=============================== */
+.cw-attach-tray {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 8px 0 10px 0;
+  width: 100%;
+}
+
+.cw-attach-pill {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--input-border);
+  border-radius: 14px;
+  background: var(--input-bg);
+  min-width: 220px;
+  max-width: 320px;
+}
+
+.cw-attach-icon {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.cw-attach-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.cw-attach-name {
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cw-attach-meta {
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.cw-attach-remove {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 14px;
+  opacity: 0.7;
+  padding: 6px;
+  border-radius: 10px;
+}
+
+.cw-attach-remove:hover {
+  opacity: 1;
+  background: rgba(0,0,0,0.06);
+}
+
+body.dark .cw-attach-remove:hover {
+  background: rgba(255,255,255,0.10);
+}
+
+
+
+
+/* Make wrapper vertical like ChatGPT */
+.chat-input-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+/* New input row: icon + textarea + send */
+.cw-input-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  width: 100%;
+}
+
+/* Tray should wrap nicely */
+.cw-attach-tray {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+/* Ensure textarea always has space */
+.chat-textarea {
+  flex: 1;
+  min-width: 0; /* important so flex works correctly */
+}
+
+
+/* ===============================
+   LIGHTER "ChatGPT-like" file cards (inside messages)
+=============================== */
+
+.attachments-list {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.attachment-row {
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  background: rgba(0, 0, 0, 0.03);
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+body.dark .attachment-row {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.attachment-name {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.attachment-meta {
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+.attachment-btn {
+  margin-top: 2px;
+  align-self: flex-start;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+body.dark .attachment-btn {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.attachment-btn:hover {
+  background: rgba(0,0,0,0.05);
+}
+body.dark .attachment-btn:hover {
+  background: rgba(255,255,255,0.08);
+}
+
+/* ===============================
+   ChatGPT-like attachment tray (before send)
+=============================== */
+
+.cw-attach-tray {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 2px 2px 10px;
+}
+
+.cw-attach-pill {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: rgba(0, 0, 0, 0.03);
+  border-radius: 14px;
+  padding: 10px 12px;
+
+  min-width: 220px;
+  max-width: 340px;
+}
+
+body.dark .cw-attach-pill {
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(255,255,255,0.06);
+}
+
+.cw-attach-icon {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: rgba(0,0,0,0.06);
+}
+
+body.dark .cw-attach-icon {
+  background: rgba(255,255,255,0.10);
+}
+
+.cw-attach-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.cw-attach-name {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cw-attach-meta {
+  font-size: 12px;
+  opacity: 0.7;
+  margin-top: 2px;
+}
+
+.cw-attach-remove {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  opacity: 0.6;
+  font-size: 14px;
+}
+
+.cw-attach-remove:hover {
+  opacity: 1;
+}
+
+/* ===============================
+   Uploading spinner (indeterminate)
+=============================== */
+
+.cw-spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(0,0,0,0.20);
+  border-top-color: rgba(0,0,0,0.55);
+  animation: cwSpin 0.8s linear infinite;
+}
+
+body.dark .cw-spinner {
+  border: 2px solid rgba(255,255,255,0.18);
+  border-top-color: rgba(255,255,255,0.55);
+}
+
+@keyframes cwSpin {
+  to { transform: rotate(360deg); }
+}

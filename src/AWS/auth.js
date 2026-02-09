@@ -3,6 +3,7 @@ import {
   confirmSignIn,
   fetchAuthSession,
   signOut,
+  // ❌ resendSignInCode,  // REMOVED (not supported in your Amplify build)
 } from "aws-amplify/auth";
 
 /**
@@ -11,13 +12,28 @@ import {
  * ============================
  */
 export const sendOtp = async (email) => {
-  return signIn({
-    username: email,
-    options: {
-      authFlowType: "USER_AUTH",
-      preferredChallenge: "EMAIL_OTP",
-    },
-  });
+  try {
+    console.log("sendOtp start:", email);
+
+    // ✅ Clear any stuck auth/challenge state
+    try {
+      await signOut(); // NOT global
+    } catch (e) {}
+
+    const res = await signIn({
+      username: email,
+      options: {
+        authFlowType: "USER_AUTH",
+        preferredChallenge: "EMAIL_OTP",
+      },
+    });
+
+    console.log("sendOtp nextStep:", res?.nextStep);
+    return res;
+  } catch (err) {
+    console.error("sendOtp failed:", err?.name, err?.message, err);
+    throw err;
+  }
 };
 
 /**
@@ -26,37 +42,55 @@ export const sendOtp = async (email) => {
  * ============================
  */
 export const verifyOtp = async (code) => {
-  return confirmSignIn({
-    challengeResponse: code,
-  });
-};
-
-/**
- * ============================
- * GET ID TOKEN (USE FOR API GW JWT)
- * ============================
- */
-export const getIdToken = async () => {
   try {
-    const session = await fetchAuthSession();
-    return session.tokens?.idToken?.toString() || null;
+    return await confirmSignIn({
+      challengeResponse: code,
+    });
   } catch (err) {
-    console.error("getIdToken failed", err);
-    return null;
+    console.error("verifyOtp failed:", err?.name, err?.message, err);
+    throw err;
   }
 };
 
 /**
  * ============================
- * GET ACCESS TOKEN (OPTIONAL)
+ * RESEND OTP ✅ FIXED
+ * ============================
+ * Amplify does not export resendSignInCode for this flow.
+ * For EMAIL_OTP, calling signIn() again triggers a new OTP.
+ *
+ * IMPORTANT: you MUST pass the email again.
+ */
+export const resendOtp = async (email) => {
+  try {
+    if (!email) throw new Error("Email is required to resend OTP");
+
+    const res = await signIn({
+      username: email,
+      options: {
+        authFlowType: "USER_AUTH",
+        preferredChallenge: "EMAIL_OTP",
+      },
+    });
+
+    console.log("resendOtp nextStep:", res?.nextStep);
+    return res;
+  } catch (err) {
+    console.error("resendOtp failed:", err?.name, err?.message, err);
+    throw err;
+  }
+};
+
+/**
+ * ============================
+ * GET ACCESS TOKEN
  * ============================
  */
 export const getAccessToken = async () => {
   try {
     const session = await fetchAuthSession();
     return session.tokens?.accessToken?.toString() || null;
-  } catch (err) {
-    console.error("getAccessToken failed", err);
+  } catch {
     return null;
   }
 };
@@ -70,7 +104,6 @@ export const getUserProfile = async () => {
   try {
     const session = await fetchAuthSession();
     const idToken = session.tokens?.idToken?.toString();
-
     if (!idToken) return null;
 
     const payload = JSON.parse(atob(idToken.split(".")[1]));
@@ -81,20 +114,20 @@ export const getUserProfile = async () => {
       initial: (payload.name || payload.email)[0].toUpperCase(),
       sub: payload.sub,
     };
-  } catch (err) {
-    console.error("getUserProfile failed", err);
+  } catch {
     return null;
   }
 };
 
 /**
  * ============================
- * LOGOUT (🔥 FIXED)
+ * LOGOUT
  * ============================
  */
 export const logout = async () => {
   try {
-    await signOut({ global: true }); // ✅ ONLY REQUIRED CHANGE
+    await signOut();
+    localStorage.removeItem("isAuthenticated");
   } catch (err) {
     console.error("logout failed", err);
   }
