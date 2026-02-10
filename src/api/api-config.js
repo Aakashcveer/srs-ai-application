@@ -7,7 +7,7 @@
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 
 console.log("✅ LOADED api-config.js FROM:", import.meta.url, "TIME:", Date.now());
-console.log("✅ api-config UPDATED VERSION 1001"); // bump to confirm new file is running
+console.log("✅ api-config UPDATED VERSION 1002"); // bump to confirm new file is running
 
 export const ENDPOINTS = {
   chat: `${API_BASE_URL}/chat`,
@@ -287,7 +287,13 @@ export const uploadFilePresigned = async ({ sessionId, userId, file }, token) =>
 // ✅ PRESIGNED DOWNLOAD
 // ===============================
 export const presignDownload = async (
-  { userId, s3Key, sessionId = null, fileName = null },
+  {
+    userId,
+    s3Key,
+    sessionId = null,
+    fileName = null,
+    fileType = null, // ✅ ADDED (optional)
+  },
   token
 ) => {
   assertToken(token);
@@ -304,12 +310,46 @@ export const presignDownload = async (
         SessionId: sessionId,
         s3Key,
         fileName,
+        fileType, // ✅ ADDED
       },
     }),
   });
 
   if (!res.ok) throw new Error(await res.text());
   return res.json();
+};
+
+// ✅ helper to trigger download without opening new tab
+export const triggerBrowserDownload = (downloadUrl, fileName = "download") => {
+  const a = document.createElement("a");
+  a.href = downloadUrl;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+};
+
+// ✅ Full helper: presign-download -> trigger browser download
+export const downloadFilePresigned = async (
+  { userId, s3Key, sessionId = null, fileName = null, fileType = null },
+  token
+) => {
+  assertToken(token);
+
+  const res = await presignDownload(
+    { userId, s3Key, sessionId, fileName, fileType },
+    token
+  );
+
+  const url = res.downloadUrl;
+  const resolvedName = res.fileName || fileName || "download";
+
+  if (!url) throw new Error("Missing downloadUrl from backend");
+
+  triggerBrowserDownload(url, resolvedName);
+
+  // return response in case UI wants it
+  return res;
 };
 
 // ===============================

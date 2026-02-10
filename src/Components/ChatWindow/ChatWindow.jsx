@@ -94,24 +94,49 @@ const ChatWindow = ({
     });
 
   // ===============================
+  // ✅ DOWNLOAD HELPER (NO NEW TAB)
+  // ===============================
+  const triggerDownload = (downloadUrl, fileName = "download") => {
+    const a = document.createElement("a");
+    a.href = downloadUrl;
+    a.download = fileName; // browser respects this for "download" behavior
+    a.rel = "noopener";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
+  // ===============================
   // ATTACHMENT DOWNLOAD ROW
   // ===============================
   const AttachmentRow = ({ att }) => {
     const name = att.fileName || att.name || "file";
     const s3Key = att.s3Key;
-    const fileType = att.fileType || att.mimeType || "unknown";
+    const fileType = att.fileType || att.mimeType || "application/octet-stream";
     const fileSize = att.fileSize ?? att.size ?? 0;
 
     const onDownload = async () => {
       try {
         const token = await getAccessToken();
-        const data = await presignDownload({ userId: user?.email, s3Key }, token);
+
+        // ✅ pass fileName + fileType so backend can force "attachment" download
+        const data = await presignDownload(
+          {
+            userId: user?.email,
+            s3Key,
+            sessionId: chatIdRef.current || chat?.id || null,
+            fileName: name,
+            fileType: fileType,
+          },
+          token
+        );
 
         if (!data?.downloadUrl) {
           throw new Error("No download URL returned");
         }
 
-        window.open(data.downloadUrl, "_blank");
+        // ✅ DO NOT window.open (opens new tab). Trigger download instead.
+        triggerDownload(data.downloadUrl, data.fileName || name);
       } catch (e) {
         console.error("Download failed:", e);
         alert(e?.message || "Download failed");
