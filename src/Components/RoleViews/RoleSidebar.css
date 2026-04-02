@@ -1,0 +1,719 @@
+/* src/Components/RoleViews/RoleSidebar.css */
+/* Flat + premium (ChatGPT-like) sidebar for CustomerSidebar + SupplierSidebar */
+
+:root {
+  --sb-bg: #ffffff;
+  --sb-text: #0f172a;
+  --sb-muted: rgba(15, 23, 42, 0.55);
+
+  --sb-hover: rgba(15, 23, 42, 0.06);
+  --sb-active: rgba(15, 23, 42, 0.10);
+
+  --sb-divider: rgba(15, 23, 42, 0.10);
+  --sb-soft: rgba(15, 23, 42, 0.035);
+
+  --sb-radius: 14px;
+  --sb-radius-sm: 12px;
+
+  --sb-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+  --sb-shadow-sm: 0 6px 16px rgba(15, 23, 42, 0.06);
+
+  --sb-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Dark theme support: add .dark on body or a parent wrapper */
+body.dark,
+.dark {
+  --sb-bg: #0b1220;
+  --sb-text: rgba(255, 255, 255, 0.92);
+  --sb-muted: rgba(255, 255, 255, 0.55);
+
+  --sb-hover: rgba(255, 255, 255, 0.06);
+  --sb-active: rgba(255, 255, 255, 0.10);
+
+  --sb-divider: rgba(255, 255, 255, 0.10);
+  --sb-soft: rgba(255, 255, 255, 0.06);
+
+  --sb-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
+  --sb-shadow-sm: 0 10px 22px rgba(0, 0, 0, 0.35);
+}
+
+/* =========================
+   Shell + smooth collapse
+   ========================= */
+.role-sidebar {
+  
+  width: 320px;
+  height: 100vh;
+  background: var(--sb-bg);
+  color: var(--sb-text);
+
+  display: flex;
+  flex-direction: column;
+
+  padding: 14px 12px;
+  box-sizing: border-box;
+
+  /* premium separation */
+  border-right: 1px solid rgba(0,0,0,0.06);
+  box-shadow: 2px 0 10px rgba(0,0,0,0.03);
+
+  transition: width 260ms cubic-bezier(.2,.8,.2,1);
+}
+  
+
+
+.role-sidebar.collapsed {
+  width: 72px;
+  padding: 12px 10px;
+}
+
+/* This wrapper lets us fade content nicely when collapsed */
+.role-sidebar .role-collapse-fade {
+  transition: opacity 200ms var(--sb-ease), transform 200ms var(--sb-ease);
+  transform-origin: left center;
+}
+
+.role-sidebar.collapsed .role-collapse-fade {
+  opacity: 0;
+  transform: translateX(-6px);
+  pointer-events: none;
+}
+
+/* =========================
+   Header (flat)
+   ========================= */
+.role-sidebar-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+
+  padding: 6px 6px 10px 6px;
+  position: sticky;
+  top: 0;
+  background: var(--sb-bg);
+  z-index: 5;
+}
+
+.role-burger {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+
+  border: none;
+  background: transparent;
+  color: var(--sb-text);
+  cursor: pointer;
+
+  display: grid;
+  place-items: center;
+  font-size: 18px;
+
+  transition: background 160ms var(--sb-ease), transform 160ms var(--sb-ease);
+}
+
+.role-burger:hover {
+  background: var(--sb-hover);
+}
+
+.role-burger:active {
+  transform: scale(0.98);
+}
+
+.role-title {
+  font-size: 16px;
+  font-weight: 750;
+  letter-spacing: -0.2px;
+}
+
+/* Smooth hide title in collapsed mode */
+.role-sidebar.collapsed .role-title {
+  opacity: 0;
+  transform: translateX(-6px);
+  pointer-events: none;
+  transition: opacity 200ms var(--sb-ease), transform 200ms var(--sb-ease);
+}
+
+/* =========================
+   Section titles
+   ========================= */
+.role-section-title {
+  margin: 14px 6px 8px 6px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  color: var(--sb-muted);
+  text-transform: uppercase;
+}
+
+/* Hide section titles smoothly */
+.role-sidebar.collapsed .role-section-title {
+  opacity: 0;
+  transform: translateX(-6px);
+  pointer-events: none;
+  transition: opacity 200ms var(--sb-ease), transform 200ms var(--sb-ease);
+}
+
+/* =========================
+   Top menu buttons (minimal pills)
+   ========================= */
+.role-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 6px 6px 0 6px;
+}
+
+.role-menu-item {
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: var(--sb-soft);
+  color: var(--sb-text);
+
+  border-radius: var(--sb-radius-sm);
+  padding: 10px 12px;
+
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 650;
+
+  transition: background 160ms var(--sb-ease),
+    transform 160ms var(--sb-ease);
+}
+
+.role-menu-item:hover {
+  background: var(--sb-hover);
+}
+
+.role-menu-item:active {
+  transform: scale(0.99);
+}
+
+/* Smooth collapse for the whole menu */
+.role-sidebar.collapsed .role-menu {
+  opacity: 0;
+  transform: translateX(-6px);
+  pointer-events: none;
+  transition: opacity 200ms var(--sb-ease), transform 200ms var(--sb-ease);
+}
+
+/* =========================
+   Requests list
+   ========================= */
+.role-list {
+  flex: 1;
+  overflow: auto;
+
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+
+  padding: 6px;
+}
+
+/* smooth scrollbar */
+.role-list::-webkit-scrollbar {
+  width: 10px;
+}
+.role-list::-webkit-scrollbar-thumb {
+  background: rgba(15, 23, 42, 0.14);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+.dark .role-list::-webkit-scrollbar-thumb,
+body.dark .role-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.20);
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+
+.role-list-item {
+  border: none;
+  background: transparent;
+
+  border-radius: var(--sb-radius-sm);
+  padding: 11px 12px;
+
+  cursor: pointer;
+  text-align: left;
+  color: var(--sb-text);
+
+  display: flex;
+  align-items: center;
+
+  transition: background 160ms var(--sb-ease),
+    transform 160ms var(--sb-ease);
+}
+
+.role-list-item:hover {
+  background: var(--sb-hover);
+}
+
+.role-list-item.active {
+  background: var(--sb-active);
+}
+
+.role-list-item span {
+  font-size: 14px;
+  font-weight: 750;
+  letter-spacing: -0.1px;
+
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Smooth hide list text when collapsed */
+.role-sidebar.collapsed .role-list-item span {
+  opacity: 0;
+  transform: translateX(-4px);
+  transition: opacity 180ms var(--sb-ease), transform 180ms var(--sb-ease);
+}
+
+/* Keep button height stable when collapsed */
+.role-sidebar.collapsed .role-list-item {
+  justify-content: center;
+  padding: 12px 8px;
+}
+
+.role-empty {
+  padding: 14px 10px;
+  color: var(--sb-muted);
+  font-size: 13px;
+}
+
+.role-sidebar.collapsed .role-empty {
+  opacity: 0;
+  pointer-events: none;
+  height: 0;
+  overflow: hidden;
+  transition: opacity 180ms var(--sb-ease);
+}
+
+/* =========================
+   Footer
+   ========================= */
+.role-footer {
+  padding: 12px 6px 6px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Divider line */
+.role-footer::before {
+  content: "";
+  height: 1px;
+  background: var(--sb-divider);
+  width: 100%;
+  border-radius: 999px;
+}
+
+/* Agent toggle row (flat) */
+.agent-toggle-wrapper {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+
+  gap: 10px;
+  padding: 10px 8px;
+
+  border-radius: var(--sb-radius-sm);
+  background: transparent;
+
+  transition: background 160ms var(--sb-ease);
+}
+
+.agent-toggle-wrapper:hover {
+  background: var(--sb-hover);
+}
+
+.agent-toggle-label {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--sb-text);
+}
+
+/* Smooth hide label when collapsed */
+.role-sidebar.collapsed .agent-toggle-label {
+  opacity: 0;
+  transform: translateX(-4px);
+  transition: opacity 180ms var(--sb-ease), transform 180ms var(--sb-ease);
+}
+
+/* Toggle switch (minimal, clean) */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 46px;
+  height: 26px;
+  flex: 0 0 auto;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.slider {
+  position: absolute;
+  inset: 0;
+  cursor: pointer;
+  background: rgba(15, 23, 42, 0.18);
+  transition: 200ms var(--sb-ease);
+  border-radius: 999px;
+}
+
+.dark .slider,
+body.dark .slider {
+  background: rgba(255, 255, 255, 0.20);
+}
+
+.slider:before {
+  position: absolute;
+  content: "";
+  height: 20px;
+  width: 20px;
+  left: 3px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: #fff;
+  transition: 200ms var(--sb-ease);
+  border-radius: 999px;
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.12);
+}
+
+.switch input:checked + .slider {
+  background: rgba(15, 23, 42, 0.55);
+}
+
+.dark .switch input:checked + .slider,
+body.dark .switch input:checked + .slider {
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.switch input:checked + .slider:before {
+  transform: translate(20px, -50%);
+}
+
+/* User row */
+.role-user {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+
+  padding: 10px 8px;
+  border-radius: var(--sb-radius);
+  background: transparent;
+
+  transition: background 160ms var(--sb-ease);
+}
+
+.role-user:hover {
+  background: var(--sb-hover);
+}
+
+.role-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+
+  font-weight: 900;
+  font-size: 14px;
+  color: var(--sb-text);
+  background: rgba(15, 23, 42, 0.08);
+}
+
+.dark .role-avatar,
+body.dark .role-avatar {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.role-user-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.role-user-name {
+  font-size: 13px;
+  font-weight: 850;
+  line-height: 1.15;
+}
+
+.role-user-email {
+  font-size: 12px;
+  color: var(--sb-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Smooth hide user meta on collapse */
+.role-sidebar.collapsed .role-user-meta {
+  opacity: 0;
+  transform: translateX(-6px);
+  pointer-events: none;
+  transition: opacity 180ms var(--sb-ease), transform 180ms var(--sb-ease);
+}
+
+/* Center avatar when collapsed */
+.role-sidebar.collapsed .role-user {
+  justify-content: center;
+}
+
+/* Dropdown */
+.role-profile-dropdown {
+  margin-top: 4px;
+  border-radius: var(--sb-radius);
+  overflow: hidden;
+
+  background: var(--sb-bg);
+  box-shadow: var(--sb-shadow);
+}
+
+.role-dropdown-item {
+  width: 100%;
+  padding: 12px 12px;
+
+  background: transparent;
+  border: none;
+  text-align: left;
+
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 750;
+  color: var(--sb-text);
+
+  transition: background 160ms var(--sb-ease);
+}
+
+.role-dropdown-item:hover {
+  background: var(--sb-hover);
+}
+
+.role-dropdown-divider {
+  height: 1px;
+  background: var(--sb-divider);
+}
+
+.role-theme-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+
+  padding: 10px 12px 12px 12px;
+  font-size: 13px;
+  color: var(--sb-muted);
+}
+
+.role-theme-btn {
+  width: 38px;
+  height: 32px;
+  border-radius: 12px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+
+  display: grid;
+  place-items: center;
+
+  transition: background 160ms var(--sb-ease);
+  color: var(--sb-text);
+}
+
+.role-theme-btn:hover {
+  background: var(--sb-hover);
+}
+
+/* Hide dropdown on collapse */
+.role-sidebar.collapsed .role-profile-dropdown {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition: opacity 180ms var(--sb-ease), transform 180ms var(--sb-ease);
+}
+
+/* Focus polish */
+.role-menu-item:focus-visible,
+.role-list-item:focus-visible,
+.role-burger:focus-visible,
+.role-dropdown-item:focus-visible,
+.role-theme-btn:focus-visible {
+  outline: 2px solid rgba(59, 130, 246, 0.65);
+  outline-offset: 2px;
+  border-radius: 12px;
+}
+
+/* Respect reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .role-sidebar,
+  .role-sidebar * {
+    transition: none !important;
+  }
+}
+
+
+/* =========================
+   FIX: Collapsed layout polish
+   ========================= */
+
+/* When collapsed, center the footer items nicely */
+.role-sidebar.collapsed .role-footer {
+  align-items: center;
+  gap: 10px;
+}
+
+/* Remove big padding in collapsed so elements don't get cut */
+.role-sidebar.collapsed .agent-toggle-wrapper {
+  width: 52px;
+  padding: 8px 0;
+  justify-content: center;
+}
+
+/* Hide label in collapsed */
+.role-sidebar.collapsed .agent-toggle-label {
+  display: none !important;
+}
+
+/* Make toggle smaller in collapsed */
+.role-sidebar.collapsed .switch {
+  width: 40px;
+  height: 22px;
+}
+
+.role-sidebar.collapsed .slider:before {
+  width: 16px;
+  height: 16px;
+  left: 3px;
+}
+
+/* Keep the knob travel correct for smaller size */
+.role-sidebar.collapsed .switch input:checked + .slider:before {
+  transform: translate(18px, -50%);
+}
+
+/* Center user row in collapsed, keep only avatar */
+.role-sidebar.collapsed .role-user {
+  width: 52px;
+  padding: 8px 0;
+  justify-content: center;
+}
+
+.role-sidebar.collapsed .role-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+}
+
+/* =========================
+   FIX: Agent toggle ON should be green
+   ========================= */
+.switch input:checked + .slider {
+  background: rgba(34, 197, 94, 0.85) !important; /* green */
+}
+
+.dark .switch input:checked + .slider,
+body.dark .switch input:checked + .slider {
+  background: rgba(34, 197, 94, 0.75) !important; /* green in dark too */
+}
+/* =========================
+   Theme row improvements
+   ========================= */
+
+.role-theme-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.role-theme-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  background: rgba(15, 23, 42, 0.06);
+  border: 1px solid rgba(15, 23, 42, 0.10);
+
+  transition: transform 160ms ease, background 160ms ease;
+  font-size: 16px;
+}
+
+.role-theme-item:hover .role-theme-icon {
+  background: rgba(15, 23, 42, 0.09);
+  transform: translateY(-1px);
+}
+.role-theme-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  background: rgba(15, 23, 42, 0.05);
+
+  transition: background 0.2s ease, transform 0.2s ease;
+}
+
+.role-theme-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.role-theme-item:hover .role-theme-icon {
+  background: rgba(15, 23, 42, 0.08);
+  transform: translateY(-1px);
+}
+
+
+/* =========================
+   Theme icon styling
+   ========================= */
+
+.role-theme-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.role-theme-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  background: rgba(15, 23, 42, 0.05);
+  border: 1px solid rgba(15, 23, 42, 0.10);
+
+  transition: background 0.2s ease, transform 0.2s ease;
+}
+
+.role-theme-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.role-theme-item:hover .role-theme-icon {
+  background: rgba(15, 23, 42, 0.08);
+  transform: translateY(-1px);
+}
+
+.role-empty-subtext {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #64748b;
+}

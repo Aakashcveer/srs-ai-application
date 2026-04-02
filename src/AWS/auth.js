@@ -113,6 +113,10 @@ export const getUserProfile = async () => {
       name: payload.name || payload.email,
       initial: (payload.name || payload.email)[0].toUpperCase(),
       sub: payload.sub,
+
+      // ✅ NEW: role fields from Cognito (you store role in "profile")
+      profile: payload.profile, // "Customer" / "Supplier"
+      role: (payload.profile || "").toLowerCase(), // "customer" / "supplier"
     };
   } catch {
     return null;

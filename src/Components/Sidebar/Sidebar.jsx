@@ -1,15 +1,8 @@
 // src/Components/Sidebar/Sidebar.jsx
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import "./Sidebar.css";
 
-import {
-  ChatIcon,
-  EditIcon,
-  DeleteIcon,
-  PlusIcon,
-  SunIcon,
-  MoonIcon,
-} from "./icons";
+import { ChatIcon, EditIcon, PlusIcon, SunIcon, MoonIcon } from "./icons";
 
 const Sidebar = ({
   user,
@@ -17,20 +10,43 @@ const Sidebar = ({
   activeId,
   setActive,
   onCreate,
-  onDelete,
   onRename,
   theme,
   toggleTheme,
   onLogout,
   sidebarOpen,
   setSidebarOpen,
+
+  // parent can listen to toggle change
+  onAgentModeChange,
 }) => {
   const [search, setSearch] = useState("");
   const [profileOpen, setProfileOpen] = useState(false);
 
-  /* ===============================
-     SORT CHATS (MEMOIZED)
-  =============================== */
+  // Agent mode toggle state
+  const [agentMode, setAgentMode] = useState(false);
+
+  // ✅ prevent double click while creating
+  const [creating, setCreating] = useState(false);
+
+  // ✅ FIX: Cognito attribute is "profile" (Customer/Supplier)
+  const roleRaw = user?.profile || user?.role || user?.Profile || "";
+  const role = String(roleRaw).toLowerCase(); // "customer" / "supplier" / ""
+  const isCustomer = role === "customer";
+  const isSupplier = role === "supplier";
+  const isRoleBasedView = isCustomer || isSupplier;
+
+  useEffect(() => {
+    const saved = localStorage.getItem("agentMode");
+    if (saved !== null) setAgentMode(saved === "true");
+  }, []);
+
+  const handleAgentToggle = (checked) => {
+    setAgentMode(checked);
+    localStorage.setItem("agentMode", String(checked));
+    onAgentModeChange?.(checked);
+  };
+
   const sortedChats = useMemo(() => {
     return [...chats].sort((a, b) => {
       const timeA = new Date(a.createdAt || 0).getTime();
@@ -39,50 +55,86 @@ const Sidebar = ({
     });
   }, [chats]);
 
-  const filteredChats = search
-    ? sortedChats.filter((c) =>
-        (c.title || "").toLowerCase().includes(search.trim().toLowerCase())
-      )
-    : sortedChats;
+  const filteredChats = useMemo(() => {
+    // ✅ In role-based view, do NOT use search filter
+    if (isRoleBasedView) return sortedChats;
+
+    if (!search.trim()) return sortedChats;
+    const q = search.trim().toLowerCase();
+    return sortedChats.filter((c) => (c.title || "").toLowerCase().includes(q));
+  }, [search, sortedChats, isRoleBasedView]);
 
   const toggleSidebar = () => {
     setSidebarOpen(!sidebarOpen);
     setProfileOpen(false);
   };
 
-  /* ===============================
-     RENAME HANDLER (UI ONLY)
-  =============================== */
   const handleRename = (chatId, currentTitle) => {
     const newTitle = prompt("Rename chat", currentTitle || "");
     if (!newTitle || !newTitle.trim()) return;
     onRename?.(chatId, newTitle.trim());
   };
 
-  /* ===============================
-     DELETE HANDLER (CONFIRM)
-  =============================== */
-  const handleDelete = (chatId) => {
-    if (!confirm("Delete this chat permanently?")) return;
-    onDelete?.(chatId);
+  const handleCreate = async (chatType) => {
+    if (!onCreate) return;
+    if (creating) return;
+
+    try {
+      setCreating(true);
+      await onCreate(chatType);
+    } finally {
+      setCreating(false);
+    }
   };
 
   return (
     <aside className={`sidebar ${sidebarOpen ? "open" : "closed"}`}>
-      {/* ===============================
-          TOP BAR
-      =============================== */}
+      {/* TOP BAR */}
       <div className="sidebar-topbar">
-        <button className="menu-btn" onClick={toggleSidebar}>
+        <button className="menu-btn" onClick={toggleSidebar} aria-label="Menu">
           ☰
         </button>
-        {sidebarOpen && <div className="sidebar-logo">ChatAI</div>}
+
+        {sidebarOpen && (
+          <div className="sidebar-logo">{isCustomer ? "My Assistant" : "ChatAI"}</div>
+        )}
       </div>
 
-      {/* ===============================
-          SEARCH
-      =============================== */}
-      {sidebarOpen && (
+      {/* ✅ ROLE MENU */}
+      {sidebarOpen && isRoleBasedView && (
+        <div style={{ padding: "0 12px 10px 12px" }}>
+          {/* ✅ Customer buttons */}
+          {isCustomer && (
+            <>
+              <button
+                className="new-chat-btn"
+                style={{ justifyContent: "flex-start" }}
+                onClick={() => handleCreate("customer_request")}
+                disabled={creating}
+                title={creating ? "Creating..." : "Create"}
+              >
+                <span>{creating ? "Creating..." : "New Customer Request"}</span>
+              </button>
+
+              <button
+                className="new-chat-btn"
+                style={{ justifyContent: "flex-start", marginTop: 8 }}
+                onClick={() => handleCreate("request_monitoring")}
+                disabled={creating}
+                title={creating ? "Creating..." : "Create"}
+              >
+                <span>{creating ? "Creating..." : "Request Monitoring & Status"}</span>
+              </button>
+            </>
+          )}
+
+          {/* ✅ Supplier: NO create buttons (only see requests list) */}
+          {isSupplier && null}
+        </div>
+      )}
+
+      {/* SEARCH (hide in role-based view) */}
+      {sidebarOpen && !isRoleBasedView && (
         <div className="sidebar-search-container">
           <input
             type="text"
@@ -93,92 +145,106 @@ const Sidebar = ({
           />
 
           {search && (
-            <button className="icon-btn clear-btn" onClick={() => setSearch("")}>
+            <button
+              className="icon-btn clear-btn"
+              onClick={() => setSearch("")}
+              aria-label="Clear search"
+              title="Clear"
+            >
               ✖
             </button>
           )}
         </div>
       )}
 
-      {/* ===============================
-          NEW CHAT
-      =============================== */}
-      {sidebarOpen && (
-        <button className="new-chat-btn" onClick={onCreate}>
+      {/* NEW CHAT (hide in role-based view) */}
+      {sidebarOpen && !isRoleBasedView && (
+        <button
+          className="new-chat-btn"
+          onClick={() => handleCreate("general_chat")}
+          disabled={creating}
+          title={creating ? "Creating..." : "New Chat"}
+        >
           <PlusIcon />
-          <span>New Chat</span>
+          <span>{creating ? "Creating..." : "New Chat"}</span>
         </button>
       )}
 
-      {sidebarOpen && <div className="label">Your Chats</div>}
+      {/* LABEL */}
+      {sidebarOpen && (
+        <div className="label">{isRoleBasedView ? "Request" : "Your Chats"}</div>
+      )}
 
-      {/* ===============================
-          CHAT LIST
-      =============================== */}
+      {/* LIST */}
       <div className="chat-list">
-        {filteredChats.map((chat) => (
-          <div
-            key={chat.id}
-            className={`chat-item ${chat.id === activeId ? "active" : ""}`}
-            onClick={() => setActive(chat.id)}
-          >
-            <div className="chat-left">
-              <ChatIcon />
+        {filteredChats.map((chat) => {
+          const preview = (chat.preview || "").toString().slice(0, 120);
 
-              {sidebarOpen && (
-                // ✅ Added title attribute so full text visible on hover
-                <span className="chat-title" title={chat.title || "New Chat"}>
-                  {chat.title || "New Chat"}
-                </span>
-              )}
-            </div>
+          return (
+            <div
+              key={chat.id}
+              className={`chat-item ${chat.id === activeId ? "active" : ""}`}
+              onClick={() => setActive(chat.id)}
+            >
+              <div className="chat-left">
+                <ChatIcon />
+                {sidebarOpen && (
+                  <div className="chat-text">
+                    <span className="chat-title" title={chat.title || chat.id || "Item"}>
+                      {chat.title || chat.id || "Item"}
+                    </span>
 
-            {sidebarOpen && (
-              // ✅ Stop propagation here so icons never trigger chat open
-              <div
-                className="chat-actions"
-                onClick={(e) => e.stopPropagation()}
-              >
-                {onRename && (
-                  <button
-                    className="icon-btn chat-action-btn"
-                    onClick={() => handleRename(chat.id, chat.title)}
-                    aria-label="Rename"
-                    title="Rename"
-                  >
-                    <EditIcon />
-                  </button>
-                )}
-
-                {onDelete && (
-                  <button
-                    className="icon-btn chat-action-btn"
-                    onClick={() => handleDelete(chat.id)}
-                    aria-label="Delete"
-                    title="Delete"
-                  >
-                    <DeleteIcon />
-                  </button>
+                    {!isRoleBasedView && !!preview && (
+                      <div className="chat-preview" title={preview}>
+                        {preview}
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
-            )}
-          </div>
-        ))}
+
+              {sidebarOpen && !isRoleBasedView && (
+                <div className="chat-actions" onClick={(e) => e.stopPropagation()}>
+                  {onRename && (
+                    <button
+                      className="icon-btn chat-action-btn"
+                      onClick={() => handleRename(chat.id, chat.title)}
+                      aria-label="Rename"
+                      title="Rename"
+                    >
+                      <EditIcon />
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
 
         {sidebarOpen && filteredChats.length === 0 && (
-          <div className="no-chats">No chats found</div>
+          <div className="no-chats">
+            {isRoleBasedView ? "No requests found" : "No chats found"}
+          </div>
         )}
       </div>
 
-      {/* ===============================
-          PROFILE
-      =============================== */}
+      {/* PROFILE */}
       {sidebarOpen && (
         <div className="profile-container">
-          <div
-            className="profile-row"
-            onClick={() => setProfileOpen(!profileOpen)}
-          >
+          <div className="agent-toggle-wrapper">
+            <span className="agent-toggle-label">Agent Mode</span>
+
+            <label className="switch">
+              <input
+                type="checkbox"
+                checked={agentMode}
+                onChange={(e) => handleAgentToggle(e.target.checked)}
+              />
+              <span className="slider" />
+            </label>
+          </div>
+
+          <div className="profile-row" onClick={() => setProfileOpen(!profileOpen)}>
             <div className="profile-avatar">{user?.initial || "U"}</div>
 
             <div className="profile-info">
@@ -197,12 +263,18 @@ const Sidebar = ({
 
               <div className="dropdown-divider"></div>
 
-              <div className="theme-row">
+              {/* ✅ FIXED THEME ROW (clean icon + whole row clickable) */}
+              <button
+                className="dropdown-item theme-item"
+                onClick={toggleTheme}
+                type="button"
+              >
                 <span>Theme</span>
-                <button className="icon-btn" onClick={toggleTheme}>
-                  {theme === "dark" ? <SunIcon /> : <MoonIcon />}
-                </button>
-              </div>
+
+                <span className="theme-icon-btn" aria-hidden="true">
+                  {theme === "dark" ? <MoonIcon /> : <SunIcon />}
+                </span>
+              </button>
             </div>
           )}
         </div>

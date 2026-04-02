@@ -94,3 +94,986 @@ body.dark {
 .layout.dark {
   /* also uses body.dark, OR you can extend if needed */
 }
+
+
+
+/* ==========================
+   Chat Markdown Table Style
+   ========================== */
+
+.markdown-body table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  margin-top: 14px;
+  margin-bottom: 14px;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  font-size: 14px;
+}
+
+/* Header */
+.markdown-body thead th {
+  background: #f8fafc;
+  color: #1e293b;
+  font-weight: 600;
+  text-align: left;
+  padding: 14px 16px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+/* Cells */
+.markdown-body td {
+  padding: 14px 16px;
+  border-bottom: 1px solid #f1f5f9;
+  color: #334155;
+}
+
+/* Remove last border */
+.markdown-body tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* Hover row */
+.markdown-body tbody tr:hover {
+  background: #f8fafc;
+}
+
+/* Rounded corners */
+.markdown-body thead th:first-child {
+  border-top-left-radius: 12px;
+}
+
+.markdown-body thead th:last-child {
+  border-top-right-radius: 12px;
+}
+
+
+
+/* STATUS BADGES */
+
+.status-pending{
+  background:#fef3c7;
+  color:#92400e;
+  padding:4px 10px;
+  border-radius:8px;
+  font-size:12px;
+  font-weight:500;
+}
+
+.status-complete{
+  background:#dcfce7;
+  color:#166534;
+  padding:4px 10px;
+  border-radius:8px;
+  font-size:12px;
+  font-weight:500;
+}
+
+.status-reject{
+  background:#fee2e2;
+  color:#991b1b;
+  padding:4px 10px;
+  border-radius:8px;
+  font-size:12px;
+  font-weight:500;
+}
+
+
+/* Scrollable markdown table wrapper */
+.table-scroll-wrap {
+  width: 100%;
+  max-height: 420px;
+  overflow-y: auto;
+  overflow-x: auto;
+  margin-top: 12px;
+  margin-bottom: 12px;
+  border-radius: 12px;
+}
+
+/* Keep header visible while scrolling */
+.markdown-body thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #f8fafc;
+}
+
+/* Clickable request rows */
+.clickable-status-row.is-clickable {
+  cursor: pointer;
+  transition: background 0.18s ease;
+}
+
+.clickable-status-row.is-clickable:hover {
+  background: #eef6ff !important;
+}
+
+.clickable-status-row.is-clickable:focus {
+  outline: 2px solid #3b82f6;
+  outline-offset: -2px;
+}
+
+
+.table-scroll-wrap {
+  width: 100%;
+  max-height: 420px;
+  overflow-y: auto;
+  overflow-x: auto;
+  margin-top: 12px;
+  margin-bottom: 12px;
+  border-radius: 12px;
+}
+
+.markdown-body thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #f8fafc;
+}
+
+.clickable-status-row.is-clickable {
+  cursor: pointer;
+  transition: background 0.18s ease;
+}
+
+.clickable-status-row.is-clickable:hover {
+  background: #eef6ff !important;
+}
+
+.clickable-status-row.is-clickable:focus {
+  outline: 2px solid #3b82f6;
+  outline-offset: -2px;
+}
+/* ==========================
+   Better dashboard table look
+   ========================== */
+
+/* outer markdown block */
+.markdown-body {
+  width: 100%;
+}
+
+/* scroll wrapper */
+.table-scroll-wrap {
+  width: 100%;
+  max-height: 420px;
+  overflow-y: auto;
+  overflow-x: auto;
+  margin: 8px 0 2px;
+  border-radius: 16px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+}
+
+/* table */
+.markdown-body table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  margin: 0;
+  background: #ffffff;
+  font-size: 15px;
+  table-layout: fixed;
+}
+
+/* header */
+.markdown-body thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #f8fafc;
+  color: #0f172a;
+  font-weight: 700;
+  text-align: left;
+  padding: 18px 20px;
+  border-bottom: 1px solid #e2e8f0;
+  line-height: 1.25;
+}
+
+/* body cells */
+.markdown-body td {
+  padding: 18px 20px;
+  border-bottom: 1px solid #eef2f7;
+  color: #334155;
+  vertical-align: middle;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+/* zebra rows */
+.markdown-body tbody tr:nth-child(even) td {
+  background: #fcfdff;
+}
+
+/* last row */
+.markdown-body tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* hover */
+.clickable-status-row.is-clickable {
+  cursor: pointer;
+  transition: background 0.18s ease, transform 0.12s ease;
+}
+
+.clickable-status-row.is-clickable:hover td {
+  background: #eff6ff !important;
+}
+
+.clickable-status-row.is-clickable:active td {
+  background: #dbeafe !important;
+}
+
+/* rounded corners */
+.markdown-body thead th:first-child {
+  border-top-left-radius: 16px;
+}
+
+.markdown-body thead th:last-child {
+  border-top-right-radius: 16px;
+}
+
+.markdown-body tbody tr:last-child td:first-child {
+  border-bottom-left-radius: 16px;
+}
+
+.markdown-body tbody tr:last-child td:last-child {
+  border-bottom-right-radius: 16px;
+}
+
+/* better first 2 columns */
+.markdown-body tbody td:first-child {
+  font-weight: 600;
+  color: #1d4ed8;
+}
+
+.markdown-body tbody td:nth-child(2) {
+  color: #1e293b;
+  font-weight: 500;
+}
+
+/* badges */
+.status-pending,
+.status-complete,
+.status-reject {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 84px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  border: 1px solid transparent;
+}
+
+.status-pending {
+  background: #fef3c7;
+  color: #b45309;
+  border-color: #fde68a;
+}
+
+.status-complete {
+  background: #dcfce7;
+  color: #166534;
+  border-color: #bbf7d0;
+}
+
+.status-reject {
+  background: #fee2e2;
+  color: #b91c1c;
+  border-color: #fecaca;
+}
+
+/* make bot bubble cleaner when it contains table */
+.msg-row.bot .msg-bubble {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  box-shadow: 0 4px 18px rgba(15, 23, 42, 0.04);
+}
+
+/* optional: slightly wider table bubble */
+.msg-row.bot .msg-bubble .markdown-body {
+  width: 100%;
+}
+
+/* ==========================
+   Clickable request link
+   ========================== */
+
+.markdown-body tbody td:first-child {
+  font-weight: 600;
+  color: #2563eb;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+/* hover link effect */
+.markdown-body tbody tr:hover td:first-child {
+  color: #1d4ed8;
+  text-decoration: underline;
+}
+
+/* active click */
+.markdown-body tbody tr:active td:first-child {
+  color: #1e40af;
+}
+
+
+
+
+/* ==========================
+   Status badge animation
+   ========================== */
+
+.status-pending,
+.status-complete,
+.status-reject {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 84px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  border: 1px solid transparent;
+  transition: all 0.18s ease;
+}
+
+/* subtle hover lift */
+.clickable-status-row:hover .status-pending,
+.clickable-status-row:hover .status-complete,
+.clickable-status-row:hover .status-reject {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(0,0,0,0.08);
+}
+
+/* pending */
+.status-pending {
+  background: #fef3c7;
+  color: #b45309;
+  border-color: #fde68a;
+}
+
+/* complete */
+.status-complete {
+  background: #dcfce7;
+  color: #166534;
+  border-color: #bbf7d0;
+}
+
+/* rejected */
+.status-reject {
+  background: #fee2e2;
+  color: #b91c1c;
+  border-color: #fecaca;
+}
+
+
+/* ==========================
+   Request Monitoring Dashboard Card
+   ========================== */
+
+/* bot bubble containing table */
+.msg-row.bot .msg-bubble {
+  background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+  border: 1px solid #dbe4ee;
+  border-radius: 20px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+  padding: 22px 24px;
+  max-width: 920px;
+}
+
+/* add breathing room around markdown area */
+.msg-row.bot .msg-bubble .markdown-body {
+  width: 100%;
+}
+
+/* fake dashboard heading above first table */
+.msg-row.bot .msg-bubble .markdown-body:has(table)::before {
+  content: "📊 Request Monitoring Dashboard";
+  display: block;
+  font-size: 18px;
+  font-weight: 700;
+  color: #0f172a;
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #e5edf5;
+}
+
+/* optional subtitle line */
+
+
+/* better table wrapper inside dashboard card */
+.table-scroll-wrap {
+  width: 100%;
+  max-height: 420px;
+  overflow-y: auto;
+  overflow-x: auto;
+  margin: 10px 0 0;
+  border-radius: 16px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+/* slightly better scrollbar */
+.table-scroll-wrap::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.table-scroll-wrap::-webkit-scrollbar-track {
+  background: #f8fafc;
+  border-radius: 999px;
+}
+
+.table-scroll-wrap::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 999px;
+  border: 2px solid #f8fafc;
+}
+
+.table-scroll-wrap::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+
+
+.status-pending,
+.status-complete,
+.status-reject {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 96px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  border: 1px solid transparent;
+  transition: all 0.18s ease;
+}
+
+.status-pending::before,
+.status-complete::before,
+.status-reject::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.status-pending {
+  background: #fff7db;
+  color: #b45309;
+  border-color: #f7d774;
+}
+
+.status-pending::before {
+  background: #f59e0b;
+  box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.14);
+}
+
+.status-complete {
+  background: #dcfce7;
+  color: #166534;
+  border-color: #86efac;
+}
+
+.status-complete::before {
+  background: #22c55e;
+  box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.14);
+}
+
+.status-reject {
+  background: #fee2e2;
+  color: #b91c1c;
+  border-color: #fca5a5;
+}
+
+.status-reject::before {
+  background: #ef4444;
+  box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.14);
+}
+
+.clickable-status-row:hover .status-pending,
+.clickable-status-row:hover .status-complete,
+.clickable-status-row:hover .status-reject {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
+}
+.status-pending,
+.status-complete,
+.status-reject {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 96px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  border: 1px solid transparent;
+  transition: all 0.18s ease;
+}
+
+.status-pending::before,
+.status-complete::before,
+.status-reject::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.status-pending {
+  background: #fff7db;
+  color: #b45309;
+  border-color: #f7d774;
+}
+
+.status-pending::before {
+  background: #f59e0b;
+  box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.14);
+}
+
+.status-complete {
+  background: #dcfce7;
+  color: #166534;
+  border-color: #86efac;
+}
+
+.status-complete::before {
+  background: #22c55e;
+  box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.14);
+}
+
+.status-reject {
+  background: #fee2e2;
+  color: #b91c1c;
+  border-color: #fca5a5;
+}
+
+.status-reject::before {
+  background: #ef4444;
+  box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.14);
+}
+
+.clickable-status-row:hover .status-pending,
+.clickable-status-row:hover .status-complete,
+.clickable-status-row:hover .status-reject {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
+}
+
+
+
+.markdown-body thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: linear-gradient(180deg, #f8fbff 0%, #f1f5f9 100%);
+  color: #0f172a;
+  font-weight: 800;
+  text-align: left;
+  padding: 18px 20px;
+  border-bottom: 1px solid #dde7f0;
+  line-height: 1.25;
+}
+
+
+
+/* ==========================
+   PREMIUM REQUEST DASHBOARD
+   ========================== */
+
+/* Main bot bubble card */
+.msg-row.bot .msg-bubble {
+  background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+  border: 1px solid #dbe4ee;
+  border-radius: 24px;
+  box-shadow:
+    0 10px 30px rgba(15, 23, 42, 0.06),
+    0 2px 8px rgba(15, 23, 42, 0.04);
+  padding: 26px 28px;
+  max-width: 980px;
+}
+
+/* Dashboard heading */
+.msg-row.bot .msg-bubble .markdown-body:has(table)::before {
+  content: "📊 Request Monitoring Dashboard";
+  display: block;
+  font-size: 22px;
+  font-weight: 800;
+  color: #0f172a;
+  margin-bottom: 8px;
+  letter-spacing: -0.02em;
+}
+
+.msg-row.bot .msg-bubble .markdown-body:has(table)::after {
+  content: "Monitor all requests and click any row to open that request chat";
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: #64748b;
+  margin-top: 14px;
+}
+
+/* Divider under title */
+.msg-row.bot .msg-bubble .markdown-body {
+  width: 100%;
+}
+
+.msg-row.bot .msg-bubble .markdown-body:has(table) {
+  position: relative;
+}
+
+.msg-row.bot .msg-bubble .markdown-body:has(table) table {
+  margin-top: 18px;
+}
+
+/* Table wrapper */
+.table-scroll-wrap {
+  width: 100%;
+  max-height: 420px;
+  overflow-y: auto;
+  overflow-x: auto;
+  margin-top: 18px;
+  border-radius: 18px;
+  background: #ffffff;
+  border: 1px solid #dfe7f1;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    0 6px 18px rgba(15, 23, 42, 0.04);
+}
+
+/* Nice scrollbar */
+.table-scroll-wrap::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.table-scroll-wrap::-webkit-scrollbar-track {
+  background: #f8fafc;
+  border-radius: 999px;
+}
+
+.table-scroll-wrap::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 999px;
+  border: 2px solid #f8fafc;
+}
+
+.table-scroll-wrap::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Table */
+.markdown-body table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  margin: 0;
+  background: #ffffff;
+  font-size: 15px;
+  table-layout: fixed;
+}
+
+/* Header row */
+.markdown-body thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: linear-gradient(180deg, #f8fbff 0%, #f1f5f9 100%);
+  color: #0f172a;
+  font-weight: 800;
+  text-align: left;
+  padding: 20px 26px;
+  border-bottom: 1px solid #dde7f0;
+  line-height: 1.3;
+  font-size: 15px;
+}
+
+/* Body cells */
+.markdown-body td {
+  padding: 22px 26px;
+  border-bottom: 1px solid #edf2f7;
+  color: #334155;
+  vertical-align: middle;
+  line-height: 1.4;
+  word-break: break-word;
+  background: #ffffff;
+}
+
+/* Alternate row tint */
+.markdown-body tbody tr:nth-child(even) td {
+  background: #fcfdff;
+}
+
+/* Last row cleanup */
+.markdown-body tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* Rounded corners */
+.markdown-body thead th:first-child {
+  border-top-left-radius: 18px;
+}
+
+.markdown-body thead th:last-child {
+  border-top-right-radius: 18px;
+}
+
+.markdown-body tbody tr:last-child td:first-child {
+  border-bottom-left-radius: 18px;
+}
+
+.markdown-body tbody tr:last-child td:last-child {
+  border-bottom-right-radius: 18px;
+}
+
+/* Clickable row feel */
+.clickable-status-row.is-clickable {
+  cursor: pointer;
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+.clickable-status-row.is-clickable:hover td {
+  background: #f5f9ff !important;
+}
+
+.clickable-status-row.is-clickable:hover {
+  transform: translateY(-1px);
+}
+
+/* First column like link */
+.markdown-body tbody td:first-child {
+  font-weight: 700;
+  color: #2563eb;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.markdown-body tbody tr:hover td:first-child {
+  color: #1d4ed8;
+  text-decoration: underline;
+}
+
+/* Second column more premium */
+.markdown-body tbody td:nth-child(2) {
+  color: #0f172a;
+  font-weight: 600;
+}
+
+/* Premium badges */
+.status-pending,
+.status-complete,
+.status-reject {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 104px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  border: 1px solid transparent;
+  transition: all 0.18s ease;
+}
+
+.status-pending::before,
+.status-complete::before,
+.status-reject::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.status-pending {
+  background: linear-gradient(180deg, #fff8dc 0%, #fef3c7 100%);
+  color: #b45309;
+  border-color: #f5d36b;
+}
+
+.status-pending::before {
+  background: #f59e0b;
+  box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.14);
+}
+
+.status-complete {
+  background: linear-gradient(180deg, #ecfdf3 0%, #dcfce7 100%);
+  color: #166534;
+  border-color: #86efac;
+}
+
+.status-complete::before {
+  background: #22c55e;
+  box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.14);
+}
+
+.status-reject {
+  background: linear-gradient(180deg, #fff1f2 0%, #fee2e2 100%);
+  color: #b91c1c;
+  border-color: #fca5a5;
+}
+
+.status-reject::before {
+  background: #ef4444;
+  box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.14);
+}
+
+.clickable-status-row:hover .status-pending,
+.clickable-status-row:hover .status-complete,
+.clickable-status-row:hover .status-reject {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
+}
+
+/* ==========================
+   DARK THEME - Monitoring Dashboard
+   ========================== */
+
+body.dark .msg-row.bot .msg-bubble,
+.dark .msg-row.bot .msg-bubble {
+  background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
+  border: 1px solid #223047;
+  box-shadow:
+    0 10px 30px rgba(0, 0, 0, 0.35),
+    0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+body.dark .msg-row.bot .msg-bubble .markdown-body:has(table)::before,
+.dark .msg-row.bot .msg-bubble .markdown-body:has(table)::before {
+  color: #f8fafc;
+}
+
+body.dark .msg-row.bot .msg-bubble .markdown-body:has(table)::after,
+.dark .msg-row.bot .msg-bubble .markdown-body:has(table)::after {
+  color: #94a3b8;
+}
+
+body.dark .table-scroll-wrap,
+.dark .table-scroll-wrap {
+  background: #111827;
+  border: 1px solid #243244;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+}
+
+body.dark .markdown-body table,
+.dark .markdown-body table {
+  background: #111827;
+  color: #e5e7eb;
+}
+
+body.dark .markdown-body thead th,
+.dark .markdown-body thead th {
+  background: linear-gradient(180deg, #172033 0%, #111827 100%);
+  color: #f8fafc;
+  border-bottom: 1px solid #2a3a4f;
+}
+
+body.dark .markdown-body td,
+.dark .markdown-body td {
+  background: #111827;
+  color: #e5e7eb;
+  border-bottom: 1px solid #1f2a3a;
+}
+
+body.dark .markdown-body tbody tr:nth-child(even) td,
+.dark .markdown-body tbody tr:nth-child(even) td {
+  background: #0f1a2b;
+}
+
+body.dark .clickable-status-row.is-clickable:hover td,
+.dark .clickable-status-row.is-clickable:hover td {
+  background: #162338 !important;
+}
+
+body.dark .markdown-body tbody td:first-child,
+.dark .markdown-body tbody td:first-child {
+  color: #60a5fa;
+}
+
+body.dark .markdown-body tbody tr:hover td:first-child,
+.dark .markdown-body tbody tr:hover td:first-child {
+  color: #93c5fd;
+}
+
+body.dark .markdown-body tbody td:nth-child(2),
+.dark .markdown-body tbody td:nth-child(2) {
+  color: #f8fafc;
+}
+
+body.dark .table-scroll-wrap::-webkit-scrollbar-track,
+.dark .table-scroll-wrap::-webkit-scrollbar-track {
+  background: #0f172a;
+}
+
+body.dark .table-scroll-wrap::-webkit-scrollbar-thumb,
+.dark .table-scroll-wrap::-webkit-scrollbar-thumb {
+  background: #334155;
+  border: 2px solid #0f172a;
+}
+
+body.dark .table-scroll-wrap::-webkit-scrollbar-thumb:hover,
+.dark .table-scroll-wrap::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
+
+/* dark badges */
+body.dark .status-pending,
+.dark .status-pending {
+  background: rgba(245, 158, 11, 0.12);
+  color: #fbbf24;
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+body.dark .status-pending::before,
+.dark .status-pending::before {
+  background: #f59e0b;
+  box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.16);
+}
+
+body.dark .status-complete,
+.dark .status-complete {
+  background: rgba(34, 197, 94, 0.12);
+  color: #4ade80;
+  border-color: rgba(34, 197, 94, 0.35);
+}
+
+body.dark .status-complete::before,
+.dark .status-complete::before {
+  background: #22c55e;
+  box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.16);
+}
+
+body.dark .status-reject,
+.dark .status-reject {
+  background: rgba(239, 68, 68, 0.12);
+  color: #f87171;
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+body.dark .status-reject::before,
+.dark .status-reject::before {
+  background: #ef4444;
+  box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.16);
+}

@@ -1,7 +1,8 @@
-// src/Components/Chat/Chat.jsx
 import React, { useEffect, useState } from "react";
 import Sidebar from "../Sidebar/Sidebar";
 import ChatWindow from "../ChatWindow/ChatWindow";
+import CustomerSidebar from "../RoleViews/CustomerSidebar";
+import SupplierSidebar from "../RoleViews/SupplierSidebar";
 
 import { getUserProfile, getAccessToken } from "../../AWS/auth";
 import { CHAT_CONFIG } from "../../Config/ChatConfig";
@@ -10,7 +11,7 @@ import {
   loadSessionState,
   clearSessionState,
 } from "../../utils/Sessionstorage";
-import { initialiseChat, renameChat, deleteChat } from "../../api/api-config";
+import { initialiseChat, renameChat, createSession } from "../../api/api-config";
 
 import "./Chat.css";
 
@@ -21,7 +22,7 @@ const cleanupTempSessionFromStorage = () => {
 
     const parsed = JSON.parse(raw);
     if (parsed?.activeSessionId?.startsWith("temp-")) {
-      console.warn("🧹 Removing stale temp session from storage");
+      console.warn("Removing stale temp session from storage");
       localStorage.removeItem("chat-session-state");
     }
   } catch (e) {
@@ -30,19 +31,133 @@ const cleanupTempSessionFromStorage = () => {
   }
 };
 
+const normalizeSessionsPayload = (data) => {
+  if (
+    data?.groupedSessions?.myAssistant ||
+    data?.groupedSessions?.customerRequest ||
+    data?.groupedSessions?.supplierTask ||
+    data?.groupedSessions?.requests ||
+    data?.groupedSessions?.tasks
+  ) {
+    return {
+      requests:
+        data.groupedSessions.requests ||
+        data.groupedSessions.customerRequest ||
+        [],
+      tasks:
+        data.groupedSessions.tasks || data.groupedSessions.supplierTask || [],
+      groupedSessions: {
+        myAssistant: data.groupedSessions.myAssistant || [],
+        customerRequest:
+          data.groupedSessions.customerRequest ||
+          data.groupedSessions.requests ||
+          [],
+        supplierTask:
+          data.groupedSessions.supplierTask ||
+          data.groupedSessions.tasks ||
+          [],
+      },
+    };
+  }
+
+  if (data?.sessions?.requests || data?.sessions?.tasks) {
+    return {
+      requests: data.sessions.requests || [],
+      tasks: data.sessions.tasks || [],
+      groupedSessions: {
+        myAssistant: [],
+        customerRequest: data.sessions.requests || [],
+        supplierTask: data.sessions.tasks || [],
+      },
+    };
+  }
+
+  if (Array.isArray(data?.sessions)) {
+    const arr = data.sessions;
+    const requests = [];
+    const tasks = [];
+
+    arr.forEach((s) => {
+      const st = (s?.sessionType || "").toLowerCase();
+      const sid = s?.sessionId;
+      if (st === "request" || sid === "default-chat") requests.push(s);
+      else tasks.push(s);
+    });
+
+    return {
+      requests,
+      tasks,
+      groupedSessions: {
+        myAssistant: [],
+        customerRequest: requests,
+        supplierTask: tasks,
+      },
+    };
+  }
+
+  return {
+    requests: [],
+    tasks: [],
+    groupedSessions: {
+      myAssistant: [],
+      customerRequest: [],
+      supplierTask: [],
+    },
+  };
+};
+
+const hasValidFormState = (state) => {
+  if (!state || typeof state !== "object") return false;
+  if (Array.isArray(state?.fields) && state.fields.length > 0) return true;
+
+  const keys = [
+    "CustomerName",
+    "CustomerPartName",
+    "CustomerPartNumber",
+    "RequestDescription",
+    "RequestCompletionDate",
+    "RequestPriority",
+  ];
+
+  return keys.some(
+    (k) =>
+      state?.[k] !== undefined &&
+      state?.[k] !== null &&
+      String(state?.[k]).trim() !== ""
+  );
+};
+
+const normalizeFormState = (state) => {
+  return hasValidFormState(state) ? state : null;
+};
+
 const Chat = ({ theme, toggleTheme, onLogout }) => {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [user, setUser] = useState(null);
-  const [sessions, setSessions] = useState({});
+  const [sessions, setSessions] = useState({
+    requests: [],
+    tasks: [],
+    groupedSessions: {
+      myAssistant: [],
+      customerRequest: [],
+      supplierTask: [],
+    },
+  });
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [messages, setMessages] = useState([]);
-
   const [sessionMessagesMap, setSessionMessagesMap] = useState({});
-
   const [showIdleWarning, setShowIdleWarning] = useState(false);
   const [idleSecondsLeft, setIdleSecondsLeft] = useState(null);
+  const [formStateMap, setFormStateMap] = useState({});
+  const [agentMode, setAgentMode] = useState(
+    localStorage.getItem("agentMode") === "true"
+  );
 
-  // ✅ UPDATED: supports attachments + Attachments
+  const role = String(user?.profile || user?.role || "").toLowerCase();
+  const isCustomer = role === "customer";
+  const isSupplier = role === "supplier";
+  const isRoleBasedView = isCustomer || isSupplier;
+
   const normalizeMessages = (rawMessages = []) =>
     rawMessages.map((m, i) => {
       let text = "";
@@ -68,14 +183,14 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
       };
     });
 
-  const updateMessages = (updater) => {
+  const updateMessages = (sessionId, updater) => {
     setMessages((prev) => {
       const next = typeof updater === "function" ? updater(prev) : updater;
 
-      if (activeSessionId) {
+      if (sessionId) {
         setSessionMessagesMap((prevMap) => ({
           ...prevMap,
-          [activeSessionId]: next,
+          [sessionId]: next,
         }));
       }
 
@@ -83,14 +198,168 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
     });
   };
 
-  // ===============================
-  // ✅ UPDATED: adoptServerSessionId refreshes sessions after server returns real sessionId
-  // ===============================
+  const setFormForSession = (sessionId, nextFormState) => {
+    if (!sessionId) return;
+    const normalized = normalizeFormState(nextFormState);
+
+    setFormStateMap((prev) => {
+      const copy = { ...prev };
+      if (normalized) copy[sessionId] = normalized;
+      else delete copy[sessionId];
+      return copy;
+    });
+  };
+
+  const getSessionSource = (s) =>
+    String(s?.source || s?.rowSource || s?.itemSource || "")
+      .toLowerCase()
+      .trim();
+
+  const isBusinessOnlyRequestRow = (s) => {
+    const source = getSessionSource(s);
+    return (
+      source === "business_request" ||
+      source === "customer_request_table" ||
+      source === "request_record"
+    );
+  };
+
+  const isCustomerRequestFlowFormState = (formState) => {
+    if (!formState) return false;
+
+    const step = String(
+      formState?.step ||
+        formState?.currentStep ||
+        formState?.flowStep ||
+        formState?.stage ||
+        ""
+    )
+      .toLowerCase()
+      .trim();
+
+    const flowType = String(
+      formState?.flowType ||
+        formState?.type ||
+        formState?.requestType ||
+        formState?.mode ||
+        ""
+    )
+      .toLowerCase()
+      .trim();
+
+    return (
+      flowType.includes("customer_request") ||
+      flowType.includes("customer request") ||
+      step === "select_customer" ||
+      step === "customer_selection" ||
+      step === "customer_part_name" ||
+      step === "part_name" ||
+      step === "part_number" ||
+      step === "customer_part_number" ||
+      step === "request_form" ||
+      step === "form"
+    );
+  };
+
+  const isStarterAliasSession = (sessionId) => {
+    const sid = String(sessionId || "").toLowerCase().trim();
+    return (
+      sid === "new customer request" ||
+      sid === "customer request" ||
+      sid === "default-chat" ||
+      sid.startsWith("temp-")
+    );
+  };
+
+  const isCustomerRequestHelperMeta = (s) => {
+    const title = String(s?.title || "").toLowerCase().trim();
+    const sid = String(s?.sessionId || "").toLowerCase().trim();
+    const kcType = String(
+      s?.kcSessionType || s?.SessionType || s?.sessionType || ""
+    )
+      .toLowerCase()
+      .trim();
+
+    return (
+      title === "my assistant - new customer request" ||
+      sid === "new customer request" ||
+      sid === "customer request" ||
+      kcType === "customer request"
+    );
+  };
+
+  const isCustomerRequestHelperSessionId = (sessionId) => {
+    const sid = String(sessionId || "").toLowerCase().trim();
+    return sid === "new customer request" || sid === "customer request";
+  };
+
+  const findExistingSessionIdForChatType = (chatType) => {
+    const assistantList = sessions?.groupedSessions?.myAssistant || [];
+
+    if (chatType === "NEW_CUSTOMER_REQUEST") {
+      const found = assistantList.find((s) => {
+        const title = String(s?.title || "").toLowerCase().trim();
+        const sid = String(s?.sessionId || "").toLowerCase().trim();
+
+        return title.includes("customer request") || sid === "new customer request";
+      });
+
+      return found?.sessionId || null;
+    }
+
+    if (chatType === "NEW_SUPPLIER_REQUEST") {
+      const found = assistantList.find((s) => {
+        const title = String(s?.title || "").toLowerCase().trim();
+        const sid = String(s?.sessionId || "").toLowerCase().trim();
+
+        return (
+          title.includes("supplier request") ||
+          title.includes("supplier task") ||
+          sid === "new supplier request"
+        );
+      });
+
+      return found?.sessionId || null;
+    }
+
+    if (chatType === "REQUEST_MONITORING_STATUS") {
+      const found = assistantList.find((s) => {
+        const title = String(s?.title || "").toLowerCase().trim();
+        const sid = String(s?.sessionId || "").toLowerCase().trim();
+
+        return (
+          title.includes("monitoring") ||
+          title.includes("status") ||
+          sid === "request monitoring & status"
+        );
+      });
+
+      return found?.sessionId || null;
+    }
+
+    return null;
+  };
+
   const adoptServerSessionId = async (serverSessionId) => {
     if (!serverSessionId || !activeSessionId) return;
     if (serverSessionId === activeSessionId) return;
 
     const oldId = activeSessionId;
+    const oldFormState = formStateMap?.[oldId] || null;
+
+    const canAutoAdopt =
+      oldId.startsWith("temp-") ||
+      oldId === "default-chat" ||
+      isStarterAliasSession(oldId) ||
+      isCustomerRequestFlowFormState(oldFormState);
+
+    if (!canAutoAdopt) {
+      console.warn(
+        "Skipping adoptServerSessionId because current session should remain stable",
+        { oldId, serverSessionId }
+      );
+      return;
+    }
 
     setSessionMessagesMap((prev) => {
       const copy = { ...prev };
@@ -100,16 +369,36 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
       return copy;
     });
 
+    setFormStateMap((prev) => {
+      const copy = { ...prev };
+      if (copy[oldId]) {
+        copy[serverSessionId] = copy[oldId];
+        delete copy[oldId];
+      }
+      return copy;
+    });
+
     setSessions((prev) => {
       const tasks = (prev.tasks || []).map((s) =>
         s.sessionId === oldId ? { ...s, sessionId: serverSessionId } : s
       );
-
       const requests = (prev.requests || []).map((s) =>
         s.sessionId === oldId ? { ...s, sessionId: serverSessionId } : s
       );
 
-      return { ...prev, tasks, requests };
+      const groupedSessions = {
+        myAssistant: (prev.groupedSessions?.myAssistant || []).map((s) =>
+          s.sessionId === oldId ? { ...s, sessionId: serverSessionId } : s
+        ),
+        customerRequest: (prev.groupedSessions?.customerRequest || []).map((s) =>
+          s.sessionId === oldId ? { ...s, sessionId: serverSessionId } : s
+        ),
+        supplierTask: (prev.groupedSessions?.supplierTask || []).map((s) =>
+          s.sessionId === oldId ? { ...s, sessionId: serverSessionId } : s
+        ),
+      };
+
+      return { ...prev, tasks, requests, groupedSessions };
     });
 
     setActiveSessionId(serverSessionId);
@@ -121,13 +410,14 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
       sessionStartedAt: prevState?.sessionStartedAt || Date.now(),
     });
 
-    // ✅ refresh sessions list from backend so sidebar updates immediately
     try {
       const token = await getAccessToken();
       if (!token || !user?.email) return;
 
       const init = await initialiseChat(token, user.email, serverSessionId);
-      if (init?.sessions) setSessions(init.sessions);
+
+      setSessions(normalizeSessionsPayload(init));
+      setFormForSession(serverSessionId, init?.formState || null);
 
       if (init?.messages) {
         const normalized = normalizeMessages(init.messages || []);
@@ -147,6 +437,75 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
     setActiveSessionId(tempId);
     setSessionMessagesMap((prev) => ({ ...prev, [tempId]: [] }));
     setMessages([]);
+    setFormForSession(tempId, null);
+  };
+
+  const openCustomerRequestStarter = () => {
+    const starterId = "new customer request";
+
+    setActiveSessionId(starterId);
+    setMessages(sessionMessagesMap[starterId] || []);
+    setFormForSession(starterId, null);
+
+    setSessionMessagesMap((prev) => ({
+      ...prev,
+      [starterId]: prev[starterId] || [],
+    }));
+
+    const prevState = loadSessionState();
+    saveSessionState({
+      activeSessionId: starterId,
+      lastActivityAt: Date.now(),
+      sessionStartedAt: prevState?.sessionStartedAt || Date.now(),
+    });
+  };
+
+  const handleCreateChatType = async (chatType) => {
+    try {
+      if (chatType === "NEW_CUSTOMER_REQUEST") {
+        openCustomerRequestStarter();
+        return;
+      }
+
+      if (!user?.email) return;
+
+      const token = await getAccessToken();
+      if (!token) return;
+
+      const existingId = findExistingSessionIdForChatType(chatType);
+
+      if (existingId) {
+        await handleSessionClick(existingId);
+        return;
+      }
+
+      const created = await createSession(token, user.email, chatType);
+      const newId = created?.sessionId || created?.SessionId;
+      if (!newId) throw new Error("No sessionId returned from createSession");
+
+      setActiveSessionId(newId);
+      setSessionMessagesMap((prev) => ({ ...prev, [newId]: [] }));
+      setMessages([]);
+      setFormForSession(newId, null);
+
+      const prevState = loadSessionState();
+      saveSessionState({
+        activeSessionId: newId,
+        lastActivityAt: Date.now(),
+        sessionStartedAt: prevState?.sessionStartedAt || Date.now(),
+      });
+
+      const data = await initialiseChat(token, user.email, newId);
+      const normalized = normalizeMessages(data.messages || []);
+
+      setSessions(normalizeSessionsPayload(data));
+      setMessages(normalized);
+      setSessionMessagesMap((prev) => ({ ...prev, [newId]: normalized }));
+      setFormForSession(newId, data?.formState || null);
+    } catch (e) {
+      console.error("handleCreateChatType failed", e);
+      handleNewChat();
+    }
   };
 
   useEffect(() => {
@@ -170,7 +529,10 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
         const sid = data.activeSessionId || null;
         const normalized = normalizeMessages(data.messages || []);
 
-        setSessions(data.sessions || {});
+        setSessions(normalizeSessionsPayload(data));
+
+        if (sid) setFormForSession(sid, data?.formState || null);
+
         setActiveSessionId(sid);
         setMessages(normalized);
 
@@ -253,7 +615,8 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
 
       const now = Date.now();
       const idleExpired = now - saved.lastActivityAt > CHAT_CONFIG.IDLE_TIMEOUT_MS;
-      const sessionExpired = now - saved.sessionStartedAt > CHAT_CONFIG.MAX_SESSION_MS;
+      const sessionExpired =
+        now - saved.sessionStartedAt > CHAT_CONFIG.MAX_SESSION_MS;
 
       if (idleExpired || sessionExpired) {
         console.warn("Session expired");
@@ -270,24 +633,50 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
   const handleAutoRename = async (firstMessage) => {
     if (!activeSessionId || !user) return;
 
-    const title = firstMessage.slice(0, 60);
+    const title = (firstMessage || "").slice(0, 60);
 
     setSessions((prev) => {
-      const exists = (prev.tasks || []).some((s) => s.sessionId === activeSessionId);
+      const requests = prev.requests || [];
+      const tasks = prev.tasks || [];
 
-      return {
-        requests: prev.requests || [],
-        tasks: exists
-          ? prev.tasks.map((s) => (s.sessionId === activeSessionId ? { ...s, title } : s))
-          : [
-              ...(prev.tasks || []),
-              {
-                sessionId: activeSessionId,
-                title,
-                createdAt: Date.now(),
-              },
-            ],
+      const inRequests = requests.some((s) => s.sessionId === activeSessionId);
+      const inTasks = tasks.some((s) => s.sessionId === activeSessionId);
+
+      if (inRequests) {
+        return {
+          ...prev,
+          requests: requests.map((s) =>
+            s.sessionId === activeSessionId ? { ...s, title } : s
+          ),
+          tasks,
+        };
+      }
+
+      if (inTasks) {
+        return {
+          ...prev,
+          requests,
+          tasks: tasks.map((s) =>
+            s.sessionId === activeSessionId ? { ...s, title } : s
+          ),
+        };
+      }
+
+      const isRequest =
+        activeSessionId === "default-chat" ||
+        (activeSessionId || "").toUpperCase().startsWith("REQ-") ||
+        (activeSessionId || "").toUpperCase().startsWith("REQUEST-") ||
+        (activeSessionId || "").startsWith("default-chat-");
+
+      const newItem = {
+        sessionId: activeSessionId,
+        title,
+        createdAt: Date.now(),
       };
+
+      return isRequest
+        ? { ...prev, requests: [...requests, newItem], tasks }
+        : { ...prev, requests, tasks: [...tasks, newItem] };
     });
 
     try {
@@ -298,26 +687,84 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
     }
   };
 
-  // ===============================
-  // ✅ UPDATED: session click uses cache if available, else fetch from backend
-  // ===============================
+  const buildBusinessRequestFallbackMessages = (sessionId) => {
+    const meta = (sessions?.requests || []).find((s) => s.sessionId === sessionId);
+    if (!meta) return [];
+
+    const requestId = meta?.requestId || meta?.sessionId || "-";
+    const customerPartNumber = meta?.customerPartNumber || "-";
+    const customerPartName = meta?.customerPartName || "-";
+    const complianceStatus = meta?.complianceStatus || "Pending";
+    const fmdStatus = meta?.fmdStatus || "Pending";
+
+    return [
+      {
+        id: `fallback-${sessionId}`,
+        sender: "bot",
+        role: "assistant",
+        text:
+          `Request ID: ${requestId}\n\n` +
+          `Customer Part Number: ${customerPartNumber}\n\n` +
+          `Customer Part Name: ${customerPartName}\n\n` +
+          `Compliance Status: ${complianceStatus}\n\n` +
+          `FMD Status: ${fmdStatus}`,
+        content:
+          `Request ID: ${requestId}\n\n` +
+          `Customer Part Number: ${customerPartNumber}\n\n` +
+          `Customer Part Name: ${customerPartName}\n\n` +
+          `Compliance Status: ${complianceStatus}\n\n` +
+          `FMD Status: ${fmdStatus}`,
+        attachments: [],
+      },
+    ];
+  };
+
   const handleSessionClick = async (sessionId) => {
     try {
+      if (isCustomerRequestHelperSessionId(sessionId)) {
+        openCustomerRequestStarter();
+        return;
+      }
+
+      setMessages([]);
       setActiveSessionId(sessionId);
 
       if (sessionMessagesMap[sessionId]) {
         setMessages(sessionMessagesMap[sessionId]);
-        return;
       }
 
       const token = await getAccessToken();
       if (!token || !user) return;
 
+      const selectedRequestMeta = [
+        ...(sessions?.requests || []),
+        ...(sessions?.tasks || []),
+        ...(sessions?.groupedSessions?.myAssistant || []),
+        ...(sessions?.groupedSessions?.customerRequest || []),
+        ...(sessions?.groupedSessions?.supplierTask || []),
+      ].find((r) => r.sessionId === sessionId);
+
       const data = await initialiseChat(token, user.email, sessionId);
       const normalized = normalizeMessages(data.messages || []);
 
-      setMessages(normalized);
+      setSessions(normalizeSessionsPayload(data));
+      setFormForSession(sessionId, data?.formState || null);
 
+      if (
+        !normalized.length &&
+        selectedRequestMeta &&
+        isBusinessOnlyRequestRow(selectedRequestMeta)
+      ) {
+        const fallback = buildBusinessRequestFallbackMessages(sessionId);
+        setMessages(fallback);
+        setSessionMessagesMap((prev) => ({
+          ...prev,
+          [sessionId]: fallback,
+        }));
+        return;
+      }
+
+      setMessages(normalized);
       setSessionMessagesMap((prev) => ({
         ...prev,
         [sessionId]: normalized,
@@ -325,11 +772,37 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
     } catch (err) {
       console.error("Failed to load history", err);
       setMessages([]);
+      setFormForSession(sessionId, null);
     }
   };
 
-  const handleRenameChat = async (sessionId) => {
-    const newTitle = prompt("Rename chat");
+  const handleOpenRequestFromStatusTable = (customerPartNumber) => {
+    if (!customerPartNumber) return;
+
+    const list =
+      sessions?.groupedSessions?.customerRequest || sessions?.requests || [];
+    const part = String(customerPartNumber || "").toLowerCase().trim();
+
+    const found = list.find((s) => {
+      const sid = String(s?.sessionId || "").toLowerCase();
+      const title = String(s?.title || "").toLowerCase();
+      return sid.includes(part) || title.includes(part);
+    });
+
+    if (found?.sessionId) {
+      handleSessionClick(found.sessionId);
+    } else {
+      console.warn("Request session not found for:", customerPartNumber);
+    }
+  };
+
+  const handleOpenExistingCustomerRequest = (sessionId) => {
+    if (!sessionId) return;
+    handleSessionClick(sessionId);
+  };
+
+  const handleRenameChat = async (sessionId, newTitleFromSidebar) => {
+    const newTitle = newTitleFromSidebar || prompt("Rename chat");
     if (!newTitle || !user) return;
 
     try {
@@ -337,86 +810,209 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
       await renameChat(token, user.email, sessionId, newTitle);
 
       setSessions((prev) => ({
+        ...prev,
         requests: (prev.requests || []).map((s) =>
           s.sessionId === sessionId ? { ...s, title: newTitle } : s
         ),
         tasks: (prev.tasks || []).map((s) =>
           s.sessionId === sessionId ? { ...s, title: newTitle } : s
         ),
+        groupedSessions: {
+          myAssistant: (prev.groupedSessions?.myAssistant || []).map((s) =>
+            s.sessionId === sessionId ? { ...s, title: newTitle } : s
+          ),
+          customerRequest: (prev.groupedSessions?.customerRequest || []).map((s) =>
+            s.sessionId === sessionId ? { ...s, title: newTitle } : s
+          ),
+          supplierTask: (prev.groupedSessions?.supplierTask || []).map((s) =>
+            s.sessionId === sessionId ? { ...s, title: newTitle } : s
+          ),
+        },
       }));
     } catch (err) {
       console.error("Rename failed", err);
     }
   };
 
-  const handleDeleteChat = async (sessionId) => {
-    if (!window.confirm("Delete this chat?")) return;
+  const sidebarChats = (() => {
+    const all = [...(sessions?.requests || []), ...(sessions?.tasks || [])];
 
-    try {
-      const token = await getAccessToken();
-      await deleteChat(token, user.email, sessionId);
+    const map = new Map();
+    for (const s of all) {
+      const id = s.sessionId;
+      if (!id) continue;
 
-      setSessions((prev) => ({
-        requests: (prev.requests || []).filter((s) => s.sessionId !== sessionId),
-        tasks: (prev.tasks || []).filter((s) => s.sessionId !== sessionId),
-      }));
+      const sortTime = s.lastActivityAt || s.updatedAt || s.createdAt || 0;
+      const prev = map.get(id);
+      const prevTime = prev?._sortTime || 0;
 
-      setSessionMessagesMap((prev) => {
-        const copy = { ...prev };
-        delete copy[sessionId];
-        return copy;
-      });
-
-      if (activeSessionId === sessionId) {
-        handleNewChat();
+      if (!prev || sortTime > prevTime) {
+        map.set(id, { ...s, _sortTime: sortTime });
       }
-    } catch (err) {
-      console.error("Delete failed", err);
     }
-  };
+
+    return Array.from(map.values())
+      .sort((a, b) => (b._sortTime || 0) - (a._sortTime || 0))
+      .map((s) => {
+        const last =
+          Array.isArray(s.lastMessages) && s.lastMessages.length
+            ? s.lastMessages[s.lastMessages.length - 1]
+            : null;
+
+        const preview =
+          typeof last?.content === "string"
+            ? last.content
+            : Array.isArray(last?.content) && last.content[0]?.text
+            ? last.content[0].text
+            : "";
+
+        return {
+          id: s.sessionId,
+          title: s.title || "Chat",
+          createdAt: s.createdAt || s._sortTime,
+          preview,
+        };
+      });
+  })();
+
+  const activeFormState = activeSessionId ? formStateMap[activeSessionId] : null;
+
+  const customerRequestHelperSessionId =
+    findExistingSessionIdForChatType("NEW_CUSTOMER_REQUEST");
+
+  const isDirectCustomerRequestHelperSession =
+    String(activeSessionId || "").toLowerCase().trim() === "new customer request" ||
+    String(activeSessionId || "").toLowerCase().trim() === "customer request";
+
+  const isCustomerRequestStarterSession =
+    !!activeSessionId &&
+    (isDirectCustomerRequestHelperSession ||
+      (!!customerRequestHelperSessionId &&
+        String(activeSessionId) === String(customerRequestHelperSessionId)));
+
+  const customerRequestSuggestions = (
+    sessions?.groupedSessions?.customerRequest ||
+    sessions?.requests ||
+    []
+  ).filter((s) => {
+    const title = String(s?.title || "").toLowerCase().trim();
+    const sid = String(s?.sessionId || "").toLowerCase().trim();
+    const kcType = String(s?.kcSessionType || s?.SessionType || "")
+      .toLowerCase()
+      .trim();
+
+    if (
+      title === "my assistant - new customer request" ||
+      sid === "new customer request"
+    ) {
+      return false;
+    }
+
+    if (
+      title === "my assistant - new supplier request" ||
+      sid === "new supplier request"
+    ) {
+      return false;
+    }
+
+    if (
+      kcType === "request monitoring & status" ||
+      title === "my assistant - request status & dashboard" ||
+      sid === "request monitoring & status"
+    ) {
+      return false;
+    }
+
+    if (sid === String(activeSessionId || "").toLowerCase().trim()) {
+      return false;
+    }
+
+    if (isBusinessOnlyRequestRow(s)) {
+      return false;
+    }
+
+    return true;
+  });
 
   return (
     <div className="chat-layout">
       {showIdleWarning && (
         <div className="idle-warning-banner">
-          ⚠️ You’ll be logged out in <strong>{idleSecondsLeft}</strong> seconds due to inactivity
+          ⚠️ You’ll be logged out in <strong>{idleSecondsLeft}</strong> seconds
+          due to inactivity
         </div>
       )}
 
-      <Sidebar
-        user={user}
-        chats={[...(sessions?.requests || []), ...(sessions?.tasks || [])]
-          .map((s) => ({
-            ...s,
-            _sortTime: s.lastActivityAt || s.updatedAt || s.createdAt || 0,
-          }))
-          .sort((a, b) => (b._sortTime || 0) - (a._sortTime || 0))
-          .map((s) => ({
-            id: s.sessionId,
-            title: s.title || "Chat",
-            createdAt: s.createdAt || s._sortTime,
-          }))}
-        activeId={activeSessionId}
-        setActive={handleSessionClick}
-        onCreate={handleNewChat}
-        onRename={handleRenameChat}
-        onDelete={handleDeleteChat}
-        theme={theme}
-        toggleTheme={toggleTheme}
-        onLogout={onLogout}
-        sidebarOpen={sidebarOpen}
-        setSidebarOpen={setSidebarOpen}
-      />
+      {isRoleBasedView ? (
+        isCustomer ? (
+          <CustomerSidebar
+            requests={sessions?.requests || []}
+            groupedSessions={sessions?.groupedSessions || {}}
+            activeId={activeSessionId}
+            onSelectRequest={handleSessionClick}
+            user={user}
+            sidebarOpen={sidebarOpen}
+            setSidebarOpen={setSidebarOpen}
+            onCreate={handleCreateChatType}
+            theme={theme}
+            toggleTheme={toggleTheme}
+            onLogout={onLogout}
+            agentMode={agentMode}
+            onAgentModeChange={setAgentMode}
+          />
+        ) : (
+          <SupplierSidebar
+            requests={sessions?.requests || []}
+            groupedSessions={sessions?.groupedSessions || {}}
+            activeId={activeSessionId}
+            onSelectRequest={handleSessionClick}
+            user={user}
+            sidebarOpen={sidebarOpen}
+            setSidebarOpen={setSidebarOpen}
+            theme={theme}
+            toggleTheme={toggleTheme}
+            onLogout={onLogout}
+            agentMode={agentMode}
+            onAgentModeChange={(checked) => {
+              setAgentMode(checked);
+              localStorage.setItem("agentMode", String(checked));
+            }}
+          />
+        )
+      ) : (
+        <Sidebar
+          user={user}
+          chats={sidebarChats}
+          activeId={activeSessionId}
+          setActive={handleSessionClick}
+          onCreate={handleCreateChatType}
+          onRename={handleRenameChat}
+          theme={theme}
+          toggleTheme={toggleTheme}
+          onLogout={onLogout}
+          sidebarOpen={sidebarOpen}
+          setSidebarOpen={setSidebarOpen}
+          onAgentModeChange={setAgentMode}
+        />
+      )}
 
-      {/* ✅ REQUIRED FIX: remove key so ChatWindow does NOT remount on sessionId adoption */}
       <ChatWindow
         chat={{ id: activeSessionId, messages }}
-        updateMessages={updateMessages}
+        updateMessages={(updater) => updateMessages(activeSessionId, updater)}
         user={user}
         onFirstMessage={handleAutoRename}
         adoptServerSessionId={adoptServerSessionId}
         showIdleWarning={showIdleWarning}
         idleSecondsLeft={idleSecondsLeft}
+        agentMode={agentMode}
+        formState={activeFormState}
+        onFormStateChange={(sessionId, nextFormState) =>
+          setFormForSession(sessionId, nextFormState)
+        }
+        onOpenRequestFromStatusTable={handleOpenRequestFromStatusTable}
+        isCustomerRequestStarterSession={isCustomerRequestStarterSession}
+        customerRequestSuggestions={customerRequestSuggestions}
+        onOpenExistingCustomerRequest={handleOpenExistingCustomerRequest}
       />
     </div>
   );

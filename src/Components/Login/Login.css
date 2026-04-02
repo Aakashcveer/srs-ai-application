@@ -1,31 +1,39 @@
 /* PAGE */
 .login-page {
-  height: 100vh;
+  min-height: 100vh;
   display: flex;
   justify-content: center;
   align-items: center;
-  background: #f5f7fa;
-  padding: 20px;
+  padding: 24px;
+  background:
+    radial-gradient(circle at top left, rgba(22, 163, 74, 0.06), transparent 28%),
+    radial-gradient(circle at bottom right, rgba(15, 23, 42, 0.06), transparent 30%),
+    linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
 }
 
 /* CARD */
 .login-card {
-  background: #ffffff;
-  border-radius: 20px;
-  padding: 40px 48px;          /* 🔥 more horizontal space */
-  max-width: 520px;            /* 🔥 wider card */
   width: 100%;
-  margin: 0 auto;
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.08);
+  max-width: 540px;
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: 24px;
+  padding: 48px 52px;
+  box-shadow:
+    0 30px 60px rgba(15, 23, 42, 0.10),
+    0 10px 24px rgba(15, 23, 42, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85);
 }
 
 /* ANIMATIONS */
 .fade-in {
-  animation: fadeIn 0.4s ease;
+  animation: fadeIn 0.45s ease;
 }
 
 .slide-up {
-  animation: slideUp 0.4s ease;
+  animation: slideUp 0.45s ease;
 }
 
 @keyframes fadeIn {
@@ -34,89 +42,241 @@
 }
 
 @keyframes slideUp {
-  from { transform: translateY(20px); opacity: 0; }
-  to { transform: translateY(0); opacity: 1; }
+  from {
+    transform: translateY(18px) scale(0.985);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+}
+
+/* BRAND */
+.brand-block {
+  margin-bottom: 24px;
+}
+
+.login-brand {
+  margin: 0;
+  font-size: 42px;
+  line-height: 1.05;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  color: #0f172a;
+}
+
+.login-brand-sub {
+  margin-top: 10px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #64748b;
+  letter-spacing: 0.01em;
 }
 
 /* TITLES */
 .login-title {
+  margin: 0 0 8px;
   font-size: 28px;
-  font-weight: bold;
-  color: #222;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: #0f172a;
 }
 
 .login-sub {
-  margin-top: 6px;
-  font-size: 15px;
-  color: #666;
+  margin: 0 0 20px;
+  font-size: 16px;
+  line-height: 1.5;
+  color: #64748b;
 }
 
 /* INPUT GROUP */
 .input-group {
   position: relative;
-  margin-top: 20px;
+  margin-top: 10px;
 }
 
 .input-group input {
   width: 100%;
-  padding: 12px 14px 12px 45px;
-  border: 1px solid #d1d5db;
-  border-radius: 10px;
-  font-size: 15px;
+  height: 58px;
+  padding: 0 16px 0 50px;
+  border-radius: 16px;
+  border: 1px solid #d7dee7;
+  background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+  font-size: 16px;
+  color: #0f172a;
   outline: none;
-  transition: 0.2s;
+  transition: all 0.22s ease;
+  box-sizing: border-box;
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.03);
+}
+
+.input-group input::placeholder {
+  color: #94a3b8;
+}
+
+.input-group input:hover {
+  border-color: #c7d2de;
+  box-shadow:
+    inset 0 1px 2px rgba(15, 23, 42, 0.03),
+    0 4px 10px rgba(15, 23, 42, 0.03);
 }
 
 .input-group input:focus {
-  border-color: #4285f4;
-  box-shadow: 0 0 0 3px rgba(66,133,244,0.2);
+  border-color: #16a34a;
+  background: #ffffff;
+  box-shadow:
+    0 0 0 4px rgba(22, 163, 74, 0.14),
+    0 10px 22px rgba(22, 163, 74, 0.08);
 }
 
-/* ICONS */
+/* ICON */
 .input-icon {
   position: absolute;
   top: 50%;
-  left: 12px;
+  left: 16px;
   transform: translateY(-50%);
   font-size: 20px;
-  color: #777;
+  color: #64748b;
+  transition: color 0.2s ease;
 }
 
-.pass-toggle {
-  position: absolute;
-  right: 12px;
-  top: 50%;
-  transform: translateY(-50%);
-  cursor: pointer;
-  font-size: 21px;
-  color: #777;
+.input-group:focus-within .input-icon {
+  color: #16a34a;
 }
 
 /* ERROR */
 .error-text {
-  margin-top: 10px;
-  color: #d93025;
-  font-size: 14px;
+  margin-top: 12px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #dc2626;
+  line-height: 1.45;
 }
 
-/* BUTTONS */
+/* PRIMARY BUTTON */
 .login-btn {
   width: 100%;
-  background: #0f9d58;
-  color: white;
+  height: 56px;
+  margin-top: 28px;
   border: none;
-  padding: 12px;
-  margin-top: 26px;
-  border-radius: 10px;
-  font-size: 16px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #16a34a 0%, #15803d 100%);
+  color: #ffffff;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
   cursor: pointer;
-  transition: 0.2s;
+  transition: all 0.22s ease;
+  box-shadow:
+    0 14px 28px rgba(22, 163, 74, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
 }
 
-.login-btn:hover {
-  background: #0c8449;
+.login-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow:
+    0 18px 34px rgba(22, 163, 74, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.24);
 }
 
+.login-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.login-btn:disabled {
+  opacity: 0.72;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+/* FOOTER */
+.footer-text {
+  margin-top: 18px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #64748b;
+  line-height: 1.5;
+}
+
+/* OTP */
+.otp-container {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  margin: 24px 0 12px;
+  flex-wrap: nowrap;
+}
+
+.otp-box {
+  width: 48px;
+  height: 58px;
+  border-radius: 16px;
+  border: 1px solid #d7dee7;
+  background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+  text-align: center;
+  font-size: 22px;
+  font-weight: 700;
+  color: #0f172a;
+  outline: none;
+  transition: all 0.2s ease;
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.03);
+}
+
+.otp-box:hover {
+  border-color: #c7d2de;
+}
+
+.otp-box:focus {
+  border-color: #16a34a;
+  box-shadow:
+    0 0 0 4px rgba(22, 163, 74, 0.14),
+    0 10px 18px rgba(22, 163, 74, 0.08);
+  background: #ffffff;
+}
+
+.otp-box::-webkit-outer-spin-button,
+.otp-box::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* OTP ACTION LINKS */
+.otp-actions {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin-top: 18px;
+}
+
+.back-btn,
+.forgot-text,
+.create-account {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #2563eb;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.back-btn:hover:not(:disabled),
+.forgot-text:hover,
+.create-account:hover {
+  color: #1d4ed8;
+  text-decoration: underline;
+}
+
+.back-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  text-decoration: none;
+}
+
+/* OPTIONAL */
 .google-btn {
   width: 100%;
   margin-top: 16px;
@@ -136,32 +296,6 @@
   width: 20px;
 }
 
-.forgot-text,
-.create-account,
-.back-btn {
-  margin-top: 14px;
-  font-size: 14px;
-  color: #1a73e8;
-  background: none;
-  border: none;
-  cursor: pointer;
-}
-
-/* OTP */
-.otp-input {
-  width: 100%;
-  padding: 12px;
-  margin-top: 16px;
-  border: 1px solid #d1d5db;
-  border-radius: 10px;
-  font-size: 18px;
-  text-align: center;
-  letter-spacing: 4px;
-}
-
-
-
-
 .spinner {
   width: 20px;
   height: 20px;
@@ -176,125 +310,65 @@
   to { transform: rotate(360deg); }
 }
 
-.login-btn:disabled {
-  opacity: 0.7;
-  cursor: not-allowed;
-}
+/* MOBILE */
+@media (max-width: 560px) {
+  .login-page {
+    padding: 16px;
+  }
 
+  .login-card {
+    padding: 32px 22px;
+    border-radius: 20px;
+  }
 
-/* ============================= */
-/*     GOOGLE STYLE OTP BOXES    */
-/* ============================= */
+  .login-brand {
+    font-size: 34px;
+  }
 
-.otp-container {
-  display: flex;
-  gap: 10px;
-  justify-content: center;
-  margin: 20px 0;
-}
+  .login-brand-sub {
+    font-size: 13px;
+  }
 
-.otp-box {
-  width: 48px;
-  height: 54px;
-  font-size: 22px;
-  text-align: center;
-  border: 1px solid #d1d5db;
-  border-radius: 10px;
-  outline: none;
-  transition: 0.15s ease;
-}
+  .login-sub {
+    font-size: 15px;
+  }
 
-.otp-box:focus {
-  border-color: #4285f4;
-  box-shadow: 0 0 0 3px rgba(66,133,244,0.2);
-}
+  .input-group input {
+    height: 54px;
+    font-size: 15px;
+    border-radius: 14px;
+  }
 
+  .login-btn {
+    height: 52px;
+    border-radius: 14px;
+    font-size: 16px;
+  }
 
-
-
-/* ============================= */
-/* UI POLISH – OPTIONAL ENHANCEMENTS */
-/* ============================= */
-
-/* Input focus (green sustainability feel) */
-.input-group input:focus {
-  border-color: #16a34a;
-  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.15);
-  outline: none;
-}
-
-/* Primary button hover */
-.login-btn {
-  transition: all 0.2s ease;
-}
-
-.login-btn:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 6px 16px rgba(22, 163, 74, 0.25);
-}
-
-/* Error message styling */
-.error-text {
-  color: #dc2626;
-  font-size: 13px;
-  margin-top: 6px;
-}
-
-/* Card depth for premium look */
-.login-card {
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.08);
-  border-radius: 18px;
-}
-
-
-/* ============================= */
-/* OTP SCREEN – CLEAN & CENTERED */
-/* ============================= */
-
-.otp-container {
-  display: flex;
-  justify-content: center;
-  gap: 12px;
-  margin: 20px auto 28px;
-  max-width: 100%;
-  padding: 0 12px; /* 🔥 keeps boxes inside card */
-}
-
-.otp-box {
-  width: 44px;
-  height: 52px;
-  border-radius: 12px;
-  border: 1.5px solid #d1d5db;
-  background: #fff;
-  text-align: center;
-  font-size: 20px;
-  font-weight: 600;
-  outline: none;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
-}
-
-/* Focus (soft, not aggressive) */
-.otp-box:focus {
-  border-color: #16a34a;
-  box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.15);
-}
-
-/* Remove number arrows */
-.otp-box::-webkit-outer-spin-button,
-.otp-box::-webkit-inner-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
-
-/* Mobile */
-@media (max-width: 520px) {
   .otp-container {
     gap: 8px;
   }
 
   .otp-box {
     width: 38px;
-    height: 46px;
+    height: 48px;
+    border-radius: 12px;
     font-size: 18px;
   }
+}
+
+.footer-text {
+  margin-top: 18px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #64748b;
+  line-height: 1.5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.security-icon {
+  font-size: 16px;
+  color: #64748b;
 }

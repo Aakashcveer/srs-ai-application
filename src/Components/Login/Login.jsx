@@ -52,8 +52,11 @@ const Login = ({ onAuthenticate }) => {
     <div className="login-page fade-in">
       {step === "email" && (
         <div className="login-card slide-up">
-          <h1 className="login-title">Welcome Back</h1>
-          <p className="login-sub">Enter your email to continue</p>
+          <div className="brand-block">
+            <h1 className="login-brand">SRS AI</h1>
+          </div>
+
+          <p className="login-sub">Sign in with your email</p>
 
           <div className="input-group">
             <span className="material-symbols-outlined input-icon">mail</span>
@@ -62,6 +65,7 @@ const Login = ({ onAuthenticate }) => {
               placeholder="Email address"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleSendOtp()}
             />
           </div>
 
@@ -72,10 +76,15 @@ const Login = ({ onAuthenticate }) => {
             onClick={handleSendOtp}
             disabled={loading}
           >
-            {loading ? "Sending OTP..." : "Authenticate"}
+            {loading ? "Sending OTP..." : "Send OTP"}
           </button>
 
-          <p className="footer-text">Passwordless secure login</p>
+          <p className="footer-text">
+            <span className="material-symbols-outlined security-icon">
+              verified_user
+            </span>
+            Secure passwordless authentication
+          </p>
         </div>
       )}
 
