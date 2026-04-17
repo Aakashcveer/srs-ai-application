@@ -2645,3 +2645,238 @@ body.dark .customer-request-suggestions::before {
 body.dark .customer-request-suggestions::after {
   background: linear-gradient(to top, rgba(17,24,39,0.96), rgba(17,24,39,0));
 }
+
+
+/* ===============================
+   ✅ Email Draft Card
+   =============================== */
+
+.emailDraftShell {
+  width: 100%;
+  max-width: 920px;
+  background: #ffffff;
+  border: 1px solid #d9e2f0;
+  border-radius: 24px;
+  box-shadow: 0 14px 40px rgba(16, 24, 40, 0.08);
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.emailDraftHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #edf2f7;
+}
+
+.emailDraftEyebrow {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #64748b;
+  margin-bottom: 6px;
+}
+
+.emailDraftTitle {
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1.2;
+  color: #0f172a;
+}
+
+.emailDraftActionsTop {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.emailDraftMeta {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.emailDraftMetaRow {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  align-items: center;
+  gap: 14px;
+}
+
+.emailDraftMetaLabel {
+  font-size: 13px;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.emailDraftMetaValue {
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  border: 1px solid #dbe4f0;
+  border-radius: 14px;
+  background: #f8fbff;
+  color: #0f172a;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.emailDraftMetaValue.strong {
+  font-weight: 700;
+}
+
+.emailDraftInput {
+  width: 100%;
+  height: 46px;
+  padding: 0 14px;
+  border: 1px solid #cfd9e8;
+  border-radius: 14px;
+  background: #ffffff;
+  color: #0f172a;
+  font-size: 15px;
+  outline: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.emailDraftInput:focus {
+  border-color: #7c8cff;
+  box-shadow: 0 0 0 4px rgba(124, 140, 255, 0.12);
+}
+
+.emailDraftBodyCard {
+  border: 1px solid #dbe4f0;
+  border-radius: 18px;
+  background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+  overflow: hidden;
+}
+
+.emailDraftTextarea {
+  width: 100%;
+  min-height: 360px;
+  resize: vertical;
+  border: none;
+  outline: none;
+  background: transparent;
+  padding: 18px;
+  font-size: 15px;
+  line-height: 1.75;
+  color: #0f172a;
+  font-family: inherit;
+}
+
+.emailDraftPreview {
+  padding: 20px 22px;
+  color: #0f172a;
+  font-size: 15px;
+  line-height: 1.8;
+}
+
+.emailDraftPreview .markdown-body {
+  background: transparent;
+}
+
+.emailDraftPreview p:first-child {
+  margin-top: 0;
+}
+
+.emailDraftFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-top: 4px;
+}
+
+.emailDraftFooterHint {
+  font-size: 14px;
+  color: #64748b;
+  line-height: 1.5;
+}
+
+.emailDraftFooterActions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Make email card fill bubble nicely */
+.msg-bubble:has(.emailDraftShell) {
+  max-width: 980px;
+  width: 100%;
+  padding: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+/* fallback for browsers without :has support */
+.emailDraftShell + .formSaveMsg {
+  margin-top: 8px;
+}
+
+/* Better spacing for preview paragraphs */
+.emailDraftPreview p {
+  margin: 0 0 16px 0;
+}
+
+.emailDraftPreview p:last-child {
+  margin-bottom: 0;
+}
+
+/* Nice buttons alignment with your existing style */
+.emailDraftShell .premiumGhostBtn,
+.emailDraftShell .premiumFormSaveBtn,
+.emailDraftShell .formSaveBtn {
+  min-height: 46px;
+  padding: 0 18px;
+  border-radius: 14px;
+}
+
+/* Responsive */
+@media (max-width: 900px) {
+  .emailDraftShell {
+    padding: 18px;
+    border-radius: 20px;
+  }
+
+  .emailDraftHeader,
+  .emailDraftFooter {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .emailDraftMetaRow {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .emailDraftMetaLabel {
+    margin-bottom: 2px;
+  }
+
+  .emailDraftFooterActions {
+    width: 100%;
+    justify-content: stretch;
+    flex-wrap: wrap;
+  }
+
+  .emailDraftFooterActions button {
+    flex: 1 1 180px;
+  }
+
+  .emailDraftTitle {
+    font-size: 21px;
+  }
+
+  .emailDraftTextarea {
+    min-height: 300px;
+  }
+}

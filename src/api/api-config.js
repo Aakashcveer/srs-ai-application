@@ -6,7 +6,7 @@
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 
 console.log("✅ LOADED api-config.js FROM:", import.meta.url, "TIME:", Date.now());
-console.log("✅ api-config UPDATED VERSION 1015");
+console.log("✅ api-config UPDATED VERSION 1018");
 
 export const ENDPOINTS = {
   chat: `${API_BASE_URL}/chat`,
@@ -22,6 +22,9 @@ export const ENDPOINTS = {
   // ✅ request monitoring status table
   requestMonitoringStatus: `${API_BASE_URL}/status`,
 
+  // ✅ CUSTOMER REQUEST SEARCH
+  customerRequestSearch: `${API_BASE_URL}/customer-request/search`,
+
   // ✅ KC FILE FLOW
   kcFileUpload: `${API_BASE_URL}/file/presign-upload`,
   kcFileDownload: `${API_BASE_URL}/file/presign-download`,
@@ -31,6 +34,14 @@ export const ENDPOINTS = {
 
   // ✅ FORM SAVE
   formSave: `${API_BASE_URL}/form`,
+
+  // ✅ RDS MASTER DATA
+  customerMaster: `${API_BASE_URL}/customer-master`,
+  productMaster: `${API_BASE_URL}/product-master`,
+
+  // ✅ EMAIL FLOW
+  saveEmailDraft: `${API_BASE_URL}/email/draft`,
+  sendEmail: `${API_BASE_URL}/customer-request/send-email`,
 
   // CONFIG
   config: `${API_BASE_URL}/config`,
@@ -47,6 +58,21 @@ const assertToken = (token) => {
 // ===============================
 const REQUEST_TIMEOUT_CHAT = 30000; // 30s
 const REQUEST_TIMEOUT_AGENT = 90000; // 90s
+const REQUEST_TIMEOUT_STANDARD = 30000; // 30s
+
+// ===============================
+// ✅ COMMON RESPONSE PARSER
+// ===============================
+const parseJsonSafe = async (res) => {
+  const text = await res.text().catch(() => "");
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch (e) {
+    data = {};
+  }
+  return { text, data };
+};
 
 // ✅ normalize attachments so backend always receives same keys
 const normalizeAttachments = (attachments) => {
@@ -71,6 +97,21 @@ const normalizeCreateSessionType = (chatType) => {
   }
 
   return value;
+};
+
+// ✅ normalize source filter before sending to backend
+const normalizeSourceFilter = (sourceFilter) => {
+  const value = String(sourceFilter || "all").trim().toLowerCase();
+
+  if (
+    value === "customer_request_store" ||
+    value === "chat_session_store" ||
+    value === "all"
+  ) {
+    return value;
+  }
+
+  return "all";
 };
 
 // Agent ON  -> /agentcore-chat
@@ -103,13 +144,7 @@ export const createSession = async (token, email, chatType) => {
     }),
   });
 
-  const text = await res.text().catch(() => "");
-  let data = {};
-  try {
-    data = text ? JSON.parse(text) : {};
-  } catch (e) {
-    data = {};
-  }
+  const { text, data } = await parseJsonSafe(res);
 
   if (!res.ok) {
     throw new Error(
@@ -138,13 +173,7 @@ export const getRequestMonitoringStatus = async (token) => {
     },
   });
 
-  const text = await res.text().catch(() => "");
-  let data = {};
-  try {
-    data = text ? JSON.parse(text) : {};
-  } catch (e) {
-    data = {};
-  }
+  const { text, data } = await parseJsonSafe(res);
 
   if (!res.ok) {
     throw new Error(
@@ -156,6 +185,151 @@ export const getRequestMonitoringStatus = async (token) => {
   }
 
   return data;
+};
+
+// ===============================
+// ✅ CUSTOMER REQUEST SEARCH
+// POST /customer-request/search
+// ===============================
+export const searchCustomerRequests = async (
+  token,
+  query = "",
+  sourceFilter = "all"
+) => {
+  assertToken(token);
+
+  const finalSourceFilter = normalizeSourceFilter(sourceFilter);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_STANDARD);
+
+  try {
+    const res = await fetch(ENDPOINTS.customerRequestSearch, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        session: {
+          query: query || "",
+          sourceFilter: finalSourceFilter,
+        },
+      }),
+      signal: controller.signal,
+    });
+
+    const { text, data } = await parseJsonSafe(res);
+
+    if (!res.ok) {
+      throw new Error(
+        data?.error ||
+          data?.message ||
+          text ||
+          `Customer request search failed (${res.status})`
+      );
+    }
+
+    return data;
+  } catch (e) {
+    if (String(e?.name).includes("AbortError")) {
+      throw new Error("REQUEST_TIMEOUT");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+// ===============================
+// ✅ FETCH CUSTOMER MASTER
+// POST /customer-master
+// ===============================
+export const fetchCustomerMaster = async (token) => {
+  assertToken(token);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_STANDARD);
+
+  try {
+    const res = await fetch(ENDPOINTS.customerMaster, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({}),
+      signal: controller.signal,
+    });
+
+    const { text, data } = await parseJsonSafe(res);
+
+    if (!res.ok) {
+      throw new Error(
+        data?.error ||
+          data?.message ||
+          text ||
+          `Customer master fetch failed (${res.status})`
+      );
+    }
+
+    return data;
+  } catch (e) {
+    if (String(e?.name).includes("AbortError")) {
+      throw new Error("REQUEST_TIMEOUT");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+// ===============================
+// ✅ FETCH PRODUCT MASTER
+// POST /product-master
+// ===============================
+export const fetchProductMaster = async (customerId, token) => {
+  assertToken(token);
+  if (!customerId) throw new Error("customerId is required");
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_STANDARD);
+
+  try {
+    const res = await fetch(ENDPOINTS.productMaster, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        session: {
+          CustomerId: customerId,
+        },
+      }),
+      signal: controller.signal,
+    });
+
+    const { text, data } = await parseJsonSafe(res);
+
+    if (!res.ok) {
+      throw new Error(
+        data?.error ||
+          data?.message ||
+          text ||
+          `Product master fetch failed (${res.status})`
+      );
+    }
+
+    return data;
+  } catch (e) {
+    if (String(e?.name).includes("AbortError")) {
+      throw new Error("REQUEST_TIMEOUT");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
 };
 
 // ===============================
@@ -489,6 +663,129 @@ export const saveGeneratedForm = async (body, token) => {
     if (!res.ok) {
       const msg = data?.message || data?.error || `Save failed (${res.status})`;
       throw new Error(msg);
+    }
+
+    return data;
+  } catch (e) {
+    if (String(e?.name).includes("AbortError")) {
+      throw new Error("REQUEST_TIMEOUT");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+// ===============================
+// ✅ SAVE EMAIL DRAFT
+// POST /email/draft
+// ===============================
+export const saveEmailDraft = async (
+  { sessionId, userId, to, subject, body, requestId = "" },
+  token
+) => {
+  assertToken(token);
+
+  if (!sessionId) throw new Error("sessionId is required");
+  if (!userId) throw new Error("userId is required");
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_STANDARD);
+
+  try {
+    const res = await fetch(ENDPOINTS.saveEmailDraft, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        session: {
+          SessionId: sessionId,
+          UserId: userId,
+        },
+        payload: {
+          to: to || "",
+          subject: subject || "",
+          body: body || "",
+          requestId: requestId || "",
+        },
+      }),
+      signal: controller.signal,
+    });
+
+    const { text, data } = await parseJsonSafe(res);
+
+    if (!res.ok) {
+      throw new Error(
+        data?.error ||
+          data?.message ||
+          text ||
+          `Save email draft failed (${res.status})`
+      );
+    }
+
+    return data;
+  } catch (e) {
+    if (String(e?.name).includes("AbortError")) {
+      throw new Error("REQUEST_TIMEOUT");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+// ===============================
+// ✅ SEND EMAIL
+// POST /customer-request/send-email
+// ===============================
+export const sendCustomerEmail = async (
+  { sessionId, userId, to, subject, body, requestId = "" },
+  token
+) => {
+  assertToken(token);
+
+  if (!sessionId) throw new Error("sessionId is required");
+  if (!userId) throw new Error("userId is required");
+  if (!to) throw new Error("Recipient email is required");
+  if (!subject) throw new Error("Email subject is required");
+  if (!body) throw new Error("Email body is required");
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_STANDARD);
+
+  try {
+    const res = await fetch(ENDPOINTS.sendEmail, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        session: {
+          SessionId: sessionId,
+          UserId: userId,
+        },
+        payload: {
+          toEmail: to,
+          subject,
+          body,
+          requestId: requestId || "",
+        },
+      }),
+      signal: controller.signal,
+    });
+
+    const { text, data } = await parseJsonSafe(res);
+
+    if (!res.ok) {
+      throw new Error(
+        data?.error ||
+          data?.message ||
+          text ||
+          `Send email failed (${res.status})`
+      );
     }
 
     return data;

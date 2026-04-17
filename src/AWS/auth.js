@@ -3,7 +3,6 @@ import {
   confirmSignIn,
   fetchAuthSession,
   signOut,
-  // ❌ resendSignInCode,  // REMOVED (not supported in your Amplify build)
 } from "aws-amplify/auth";
 
 /**
@@ -15,9 +14,9 @@ export const sendOtp = async (email) => {
   try {
     console.log("sendOtp start:", email);
 
-    // ✅ Clear any stuck auth/challenge state
+    // Clear stuck auth/challenge state
     try {
-      await signOut(); // NOT global
+      await signOut();
     } catch (e) {}
 
     const res = await signIn({
@@ -43,9 +42,22 @@ export const sendOtp = async (email) => {
  */
 export const verifyOtp = async (code) => {
   try {
-    return await confirmSignIn({
+    const res = await confirmSignIn({
       challengeResponse: code,
     });
+
+    try {
+      const session = await fetchAuthSession();
+      const idToken = session?.tokens?.idToken?.toString();
+      if (idToken) {
+        const payload = JSON.parse(atob(idToken.split(".")[1]));
+        console.log("verifyOtp token claims:", payload);
+      }
+    } catch (e) {
+      console.warn("verifyOtp: failed to inspect token claims", e);
+    }
+
+    return res;
   } catch (err) {
     console.error("verifyOtp failed:", err?.name, err?.message, err);
     throw err;
@@ -54,16 +66,16 @@ export const verifyOtp = async (code) => {
 
 /**
  * ============================
- * RESEND OTP ✅ FIXED
+ * RESEND OTP
  * ============================
- * Amplify does not export resendSignInCode for this flow.
- * For EMAIL_OTP, calling signIn() again triggers a new OTP.
- *
- * IMPORTANT: you MUST pass the email again.
  */
 export const resendOtp = async (email) => {
   try {
     if (!email) throw new Error("Email is required to resend OTP");
+
+    try {
+      await signOut();
+    } catch (e) {}
 
     const res = await signIn({
       username: email,
@@ -108,17 +120,29 @@ export const getUserProfile = async () => {
 
     const payload = JSON.parse(atob(idToken.split(".")[1]));
 
+    const resolvedProfile = String(
+      payload.profile ||
+        payload["custom:profile"] ||
+        payload.role ||
+        payload["custom:role"] ||
+        ""
+    )
+      .trim();
+
+    console.log("getUserProfile token claims:", payload);
+    console.log("getUserProfile resolvedProfile:", resolvedProfile);
+
     return {
       email: payload.email,
       name: payload.name || payload.email,
-      initial: (payload.name || payload.email)[0].toUpperCase(),
+      initial: (payload.name || payload.email || "U")[0].toUpperCase(),
       sub: payload.sub,
 
-      // ✅ NEW: role fields from Cognito (you store role in "profile")
-      profile: payload.profile, // "Customer" / "Supplier"
-      role: (payload.profile || "").toLowerCase(), // "customer" / "supplier"
+      profile: resolvedProfile,
+      role: resolvedProfile.toLowerCase(),
     };
-  } catch {
+  } catch (err) {
+    console.error("getUserProfile failed", err);
     return null;
   }
 };
@@ -131,8 +155,14 @@ export const getUserProfile = async () => {
 export const logout = async () => {
   try {
     await signOut();
-    localStorage.removeItem("isAuthenticated");
   } catch (err) {
     console.error("logout failed", err);
+  } finally {
+    try {
+      localStorage.removeItem("isAuthenticated");
+      localStorage.removeItem("chat-session-state");
+      localStorage.removeItem("agentMode");
+      sessionStorage.clear();
+    } catch (e) {}
   }
 };

@@ -38,97 +38,36 @@ const CustomerSidebar = ({
   };
 
   const getDisplayAndHover = (r) => {
-    const sid = String(r?.sessionId || "");
-    const parts = sid.split("#").filter(Boolean);
+    const display =
+      String(r?.displaySessionId || "").trim() ||
+      String(r?.sessionId || "").trim() ||
+      String(r?.title || "").trim();
 
-    const display = parts[0] || r?.title || sid;
-    const hoverExtra = parts.length > 1 ? "#" + parts.slice(1).join("#") : "";
-    const hover = hoverExtra || r?.title || sid;
+    const hoverMeta = r?.hoverMeta || {};
+    const partNo = String(hoverMeta?.partNo || "").trim();
+    const partName = String(hoverMeta?.partName || "").trim();
+
+    let hover = "";
+    if (partNo || partName) {
+      hover = [
+        partNo ? `PartNo: ${partNo}` : "",
+        partName ? `PartName: ${partName}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+    } else {
+      hover =
+        String(r?.title || "").trim() ||
+        String(r?.sessionId || "").trim() ||
+        display;
+    }
 
     return { display, hover };
   };
 
-  const myAssistantList = useMemo(() => {
-    return (groupedSessions?.myAssistant || []).filter(Boolean);
-  }, [groupedSessions]);
-
   const customerRequestList = useMemo(() => {
     return (groupedSessions?.customerRequest || []).filter(Boolean);
   }, [groupedSessions]);
-
-  const supplierTaskList = useMemo(() => {
-    return (groupedSessions?.supplierTask || []).filter(Boolean);
-  }, [groupedSessions]);
-
-  const normalizeAssistantKey = (item) => {
-    const title = String(item?.title || "").toLowerCase().trim();
-    const sessionId = String(item?.sessionId || "").toLowerCase().trim();
-
-    if (
-      title.includes("customer request") ||
-      sessionId === "new customer request"
-    ) {
-      return "NEW_CUSTOMER_REQUEST";
-    }
-
-    if (
-      title.includes("supplier request") ||
-      title.includes("supplier task") ||
-      sessionId === "new supplier request"
-    ) {
-      return "NEW_SUPPLIER_REQUEST";
-    }
-
-    if (
-      title.includes("monitoring") ||
-      title.includes("status") ||
-      sessionId === "request monitoring & status"
-    ) {
-      return "REQUEST_MONITORING_STATUS";
-    }
-
-    return "";
-  };
-
-  const isAssistantActive = (item) => {
-    if (!item?.sessionId) return false;
-    return activeId === item.sessionId;
-  };
-
-  const handleAssistantClick = (item) => {
-    const mappedChatType = normalizeAssistantKey(item);
-
-    if (mappedChatType === "NEW_CUSTOMER_REQUEST") {
-      if (item?.sessionId) {
-        onSelectRequest?.(item.sessionId);
-        return;
-      }
-      onCreate?.("NEW_CUSTOMER_REQUEST");
-      return;
-    }
-
-    if (mappedChatType === "NEW_SUPPLIER_REQUEST") {
-      if (item?.sessionId) {
-        onSelectRequest?.(item.sessionId);
-        return;
-      }
-      onCreate?.("NEW_SUPPLIER_REQUEST");
-      return;
-    }
-
-    if (mappedChatType === "REQUEST_MONITORING_STATUS") {
-      if (item?.sessionId) {
-        onSelectRequest?.(item.sessionId);
-        return;
-      }
-      onCreate?.("REQUEST_MONITORING_STATUS");
-      return;
-    }
-
-    if (item?.sessionId) {
-      onSelectRequest?.(item.sessionId);
-    }
-  };
 
   return (
     <div className={`role-sidebar ${sidebarOpen ? "" : "collapsed"}`}>
@@ -146,30 +85,6 @@ const CustomerSidebar = ({
         </button>
 
         <div className="role-title">CHAT UI</div>
-      </div>
-
-      <div className="role-section-title">My Assistant</div>
-
-      <div className="role-menu">
-        {myAssistantList.map((item) => (
-          <button
-            key={item.sessionId}
-            className={`role-menu-item ${
-              isAssistantActive(item) ? "active" : ""
-            }`}
-            onClick={() => handleAssistantClick(item)}
-            title={item?.title || item?.sessionId}
-            type="button"
-          >
-            {item?.title || item?.sessionId}
-          </button>
-        ))}
-
-        {!myAssistantList.length && (
-          <div className="role-empty">
-            <div>No assistant items found</div>
-          </div>
-        )}
       </div>
 
       <div className="role-section-title">Customer Request</div>
@@ -196,55 +111,11 @@ const CustomerSidebar = ({
         {!customerRequestList.length && (
           <div className="role-empty">
             <div>No customer requests yet</div>
-            <div className="role-empty-subtext">
-              Create a new request from My Assistant
-            </div>
-          </div>
-        )}
-      </div>
-
-      <div className="role-section-title">Supplier Task</div>
-
-      <div className="role-list">
-        {supplierTaskList.map((r) => {
-          const { display, hover } = getDisplayAndHover(r);
-
-          return (
-            <button
-              key={r.sessionId}
-              className={`role-list-item ${
-                activeId === r.sessionId ? "active" : ""
-              }`}
-              onClick={() => onSelectRequest?.(r.sessionId)}
-              title={hover}
-              type="button"
-            >
-              <span>{display}</span>
-            </button>
-          );
-        })}
-
-        {!supplierTaskList.length && (
-          <div className="role-empty">
-            <div>No supplier tasks yet</div>
           </div>
         )}
       </div>
 
       <div className="role-footer">
-        <div className="agent-toggle-wrapper">
-          <span className="agent-toggle-label">Agent Mode</span>
-
-          <label className="switch">
-            <input
-              type="checkbox"
-              checked={localAgentMode}
-              onChange={(e) => handleAgentToggle(e.target.checked)}
-            />
-            <span className="slider" />
-          </label>
-        </div>
-
         <div
           className="role-user"
           onClick={() => setProfileOpen((p) => !p)}

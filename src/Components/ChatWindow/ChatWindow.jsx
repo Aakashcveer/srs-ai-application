@@ -1,4 +1,11 @@
-import React, { useEffect, useRef, useState, useLayoutEffect, useMemo } from "react";
+import React, {
+  useEffect,
+  useRef,
+  useState,
+  useLayoutEffect,
+  useMemo,
+  useCallback,
+} from "react";
 import { createPortal } from "react-dom";
 import { FolderOpen, PlusCircle, ChevronDown } from "lucide-react";
 import "./ChatWindow.css";
@@ -10,8 +17,89 @@ import {
   downloadFilePresigned,
   confirmFileUploadAndType,
   saveGeneratedForm,
+  searchCustomerRequests,
+  sendCustomerEmail,
 } from "../../api/api-config";
 import { getAccessToken } from "../../AWS/auth";
+
+/* ===============================
+   ✅ Common message helpers
+   =============================== */
+const extractMessageText = (m = {}) => {
+  return (
+    m?.text ??
+    (typeof m?.content === "string"
+      ? m.content
+      : Array.isArray(m?.content) && m.content[0]?.text
+      ? m.content[0].text
+      : "")
+  );
+};
+
+const extractMessageSender = (m = {}) => {
+  return m?.sender || (m?.role === "assistant" ? "bot" : "user");
+};
+
+const isPreparedFormMessage = (text = "") => {
+  const value = String(text || "").trim().toLowerCase();
+  return (
+    value.includes("i have prepared the customer request form") ||
+    value.includes("please review and save")
+  );
+};
+
+const isReviewPromptMessage = (text = "") => {
+  const value = String(text || "").trim().toLowerCase();
+  return (
+    value.includes("customer request submitted for review successfully") ||
+    value.includes("would you like me to generate a professional customer email draft")
+  );
+};
+
+const isSystemFlowMarkerText = (text = "") => {
+  const value = String(text || "").trim().toUpperCase().replace(/\s+/g, " ");
+  return (
+    value === "FORM_SUBMITTED" ||
+    value === "SUBMITTED_FOR_REVIEW" ||
+    value === "FORM_SUBMITTED SUBMITTED_FOR_REVIEW" ||
+    (value.includes("FORM_SUBMITTED") && value.includes("SUBMITTED_FOR_REVIEW"))
+  );
+};
+
+const getPersistedFormInsertIndex = (messages = []) => {
+  if (!Array.isArray(messages) || messages.length === 0) return 0;
+
+  let lastPreparedFormIndex = -1;
+
+  for (let i = 0; i < messages.length; i += 1) {
+    const text = extractMessageText(messages[i]);
+    if (isPreparedFormMessage(text)) {
+      lastPreparedFormIndex = i;
+    }
+  }
+
+  if (lastPreparedFormIndex >= 0) {
+    return lastPreparedFormIndex + 1;
+  }
+
+  const firstReviewPromptIndex = messages.findIndex((m) =>
+    isReviewPromptMessage(extractMessageText(m))
+  );
+  if (firstReviewPromptIndex >= 0) {
+    return firstReviewPromptIndex;
+  }
+
+  const firstEmailIndex = messages.findIndex((m) => {
+    const sender = extractMessageSender(m);
+    const text = extractMessageText(m);
+    return !!m?.emailDraft || (sender === "bot" && looksLikeEmailDraft(text));
+  });
+  if (firstEmailIndex >= 0) {
+    return firstEmailIndex;
+  }
+
+  return messages.length;
+};
 
 /* ===============================
    ✅ DocType Popover (anchored)
@@ -79,6 +167,178 @@ const DocTypePopover = ({ anchorRef, fileName, onSelect, onSkip }) => {
 };
 
 /* ===============================
+   ✅ Email Draft Helpers + Card
+   =============================== */
+const looksLikeEmailDraft = (text = "") => {
+  const value = String(text || "").trim();
+  if (!value) return false;
+  if (!/^subject\s*:/i.test(value) && !/\nsubject\s*:/i.test(value)) return false;
+  return (
+    /dear\s+/i.test(value) || /best regards/i.test(value) || /regards,/i.test(value)
+  );
+};
+
+const parseEmailDraftFromText = (text = "", fallbackTo = "") => {
+  const raw = String(text || "").replace(/\r\n/g, "\n").trim();
+  const lines = raw.split("\n");
+
+  let subject = "";
+  let bodyLines = [];
+  let foundSubject = false;
+
+  for (const line of lines) {
+    if (!foundSubject && /^subject\s*:/i.test(line)) {
+      subject = line.replace(/^subject\s*:/i, "").trim();
+      foundSubject = true;
+      continue;
+    }
+    bodyLines.push(line);
+  }
+
+  const body = bodyLines.join("\n").trim();
+
+  return {
+    to: fallbackTo || "",
+    subject: subject || "Customer Request Update",
+    body: body || raw,
+  };
+};
+
+const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail }) => {
+  const [isEditing, setIsEditing] = useState(false);
+  const [localDraft, setLocalDraft] = useState(
+    draft || { to: "", subject: "", body: "" }
+  );
+  const [statusMsg, setStatusMsg] = useState("");
+
+  useEffect(() => {
+    setLocalDraft(draft || { to: "", subject: "", body: "" });
+    setStatusMsg("");
+    setIsEditing(false);
+  }, [draft]);
+
+  if (!draft) return null;
+
+  const updateField = (key, value) => {
+    setLocalDraft((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const handleSave = () => {
+    onSaveDraft?.(localDraft);
+    setStatusMsg("Draft saved locally.");
+    setIsEditing(false);
+  };
+
+  const handleSend = () => {
+    onSendEmail?.(localDraft);
+    setStatusMsg("Send action triggered.");
+  };
+
+  return (
+    <div className="emailDraftShell">
+      <div className="emailDraftHeader">
+        <div>
+          <div className="emailDraftEyebrow">Customer Email Draft</div>
+          <div className="emailDraftTitle">Review before sending</div>
+        </div>
+
+        <div className="emailDraftActionsTop">
+          <button
+            type="button"
+            className="premiumGhostBtn"
+            onClick={() => setIsEditing((prev) => !prev)}
+          >
+            {isEditing ? "Preview" : "Edit"}
+          </button>
+        </div>
+      </div>
+
+      <div className="emailDraftMeta">
+        <div className="emailDraftMetaRow">
+          <div className="emailDraftMetaLabel">To</div>
+          {isEditing ? (
+            <input
+              className="emailDraftInput"
+              value={localDraft.to}
+              onChange={(e) => updateField("to", e.target.value)}
+              placeholder="customer@example.com"
+            />
+          ) : (
+            <div className="emailDraftMetaValue">
+              {localDraft.to || (
+                <span className="requestSummaryMuted">Not provided</span>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="emailDraftMetaRow">
+          <div className="emailDraftMetaLabel">Subject</div>
+          {isEditing ? (
+            <input
+              className="emailDraftInput"
+              value={localDraft.subject}
+              onChange={(e) => updateField("subject", e.target.value)}
+              placeholder="Enter subject"
+            />
+          ) : (
+            <div className="emailDraftMetaValue strong">
+              {localDraft.subject || (
+                <span className="requestSummaryMuted">No subject</span>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="emailDraftBodyCard">
+        {isEditing ? (
+          <textarea
+            className="emailDraftTextarea"
+            value={localDraft.body}
+            onChange={(e) => updateField("body", e.target.value)}
+            rows={14}
+            placeholder="Write email body..."
+          />
+        ) : (
+          <div className="emailDraftPreview markdown-body">
+            <MarkdownRenderer text={localDraft.body || ""} />
+          </div>
+        )}
+      </div>
+
+      <div className="emailDraftFooter">
+        <div className="emailDraftFooterHint">
+          {isEditing
+            ? "Edit the draft and save your changes before sending."
+            : "Preview the customer-facing email draft."}
+        </div>
+
+        <div className="emailDraftFooterActions">
+          <button
+            type="button"
+            className="premiumGhostBtn"
+            onClick={handleSave}
+          >
+            Save Draft
+          </button>
+
+          <button
+            type="button"
+            className="formSaveBtn premiumFormSaveBtn"
+            onClick={handleSend}
+          >
+            Send Email
+          </button>
+        </div>
+      </div>
+
+      {statusMsg ? <div className="formSaveMsg">{statusMsg}</div> : null}
+    </div>
+  );
+};
+
+/* ===============================
    ✅ Form Editor
    =============================== */
 const defaultFormTemplate = () => ({
@@ -133,16 +393,54 @@ const buildCustomerRequestFormDraft = (raw = {}) => {
     RequestPriority: requestPriority,
     fields: [
       makeField("CustomerName", "Customer Name", "text", customerName, true),
-      makeField("CustomerPartName", "Customer Part Name", "text", customerPartName, true),
-      makeField("CustomerPartNumber", "Customer Part Number", "text", customerPartNumber, true),
-      makeField("RequestDescription", "Request Description", "textarea", requestDescription, true),
-      makeField("RequestCompletionDate", "Request Completion Date", "date", requestCompletionDate, true),
-      makeField("RequestPriority", "Request Priority", "text", requestPriority, true),
+      makeField(
+        "CustomerPartName",
+        "Customer Part Name",
+        "text",
+        customerPartName,
+        true
+      ),
+      makeField(
+        "CustomerPartNumber",
+        "Customer Part Number",
+        "text",
+        customerPartNumber,
+        true
+      ),
+      makeField(
+        "RequestDescription",
+        "Request Description",
+        "textarea",
+        requestDescription,
+        true
+      ),
+      makeField(
+        "RequestCompletionDate",
+        "Request Completion Date",
+        "date",
+        requestCompletionDate,
+        true
+      ),
+      makeField(
+        "RequestPriority",
+        "Request Priority",
+        "text",
+        requestPriority,
+        true
+      ),
     ],
   };
 };
 
-const FormEditorCard = ({ formDraft, setFormDraft, onSave, saving, saveMsg }) => {
+const FormEditorCard = ({
+  formDraft,
+  setFormDraft,
+  onSave,
+  onSubmitForReview,
+  saving,
+  submittingForReview,
+  saveMsg,
+}) => {
   const [isSubmitted, setIsSubmitted] = useState(false);
 
   useEffect(() => {
@@ -251,7 +549,11 @@ const FormEditorCard = ({ formDraft, setFormDraft, onSave, saving, saveMsg }) =>
         </div>
 
         <div className="formFooter">
-          <button className="formSaveBtn" onClick={onSave} disabled={saving || isSubmitted}>
+          <button
+            className="formSaveBtn"
+            onClick={onSave}
+            disabled={saving || isSubmitted}
+          >
             {isSubmitted ? "Submitted" : saving ? "Submitting..." : "Submit"}
           </button>
           {saveMsg ? <div className="formSaveMsg">{saveMsg}</div> : null}
@@ -298,21 +600,39 @@ const FormEditorCard = ({ formDraft, setFormDraft, onSave, saving, saveMsg }) =>
   const customerPartName = String(getValueByKey("CustomerPartName") || "").trim();
   const customerPartNumber = String(getValueByKey("CustomerPartNumber") || "").trim();
   const requestDescription = String(getValueByKey("RequestDescription") || "").trim();
-  const requestCompletionDate = String(getValueByKey("RequestCompletionDate") || "").trim();
+  const requestCompletionDate = String(
+    getValueByKey("RequestCompletionDate") || ""
+  ).trim();
   const selectedPriority = String(getFieldValue(priorityField) || "Medium");
 
   const requiredChecks = [
     { key: "CustomerName", label: "Customer Name", value: customerName },
     { key: "CustomerPartName", label: "Customer Part Name", value: customerPartName },
-    { key: "CustomerPartNumber", label: "Customer Part Number", value: customerPartNumber },
-    { key: "RequestDescription", label: "Request Description", value: requestDescription },
-    { key: "RequestCompletionDate", label: "Request Completion Date", value: requestCompletionDate },
+    {
+      key: "CustomerPartNumber",
+      label: "Customer Part Number",
+      value: customerPartNumber,
+    },
+    {
+      key: "RequestDescription",
+      label: "Request Description",
+      value: requestDescription,
+    },
+    {
+      key: "RequestCompletionDate",
+      label: "Request Completion Date",
+      value: requestCompletionDate,
+    },
     { key: "RequestPriority", label: "Request Priority", value: selectedPriority },
   ];
 
-  const missingRequired = requiredChecks.filter((item) => !String(item.value || "").trim());
+  const missingRequired = requiredChecks.filter(
+    (item) => !String(item.value || "").trim()
+  );
   const completedCount = requiredChecks.length - missingRequired.length;
-  const progressPercent = Math.round((completedCount / requiredChecks.length) * 100);
+  const progressPercent = Math.round(
+    (completedCount / requiredChecks.length) * 100
+  );
 
   const customerSectionComplete =
     !!customerName && !!customerPartName && !!customerPartNumber;
@@ -330,7 +650,9 @@ const FormEditorCard = ({ formDraft, setFormDraft, onSave, saving, saveMsg }) =>
       String(f.label || "").toLowerCase().includes("date");
 
     const isInvalid =
-      f.required && !String(value || "").trim() && missingRequired.some((m) => m.key === f.key);
+      f.required &&
+      !String(value || "").trim() &&
+      missingRequired.some((m) => m.key === f.key);
 
     const getHelpText = () => {
       if (f.key === "RequestDescription") {
@@ -359,7 +681,9 @@ const FormEditorCard = ({ formDraft, setFormDraft, onSave, saving, saveMsg }) =>
 
         {isTextarea ? (
           <textarea
-            className={`premiumFormInput premiumFormTextarea ${isInvalid ? "is-invalid" : ""}`}
+            className={`premiumFormInput premiumFormTextarea ${
+              isInvalid ? "is-invalid" : ""
+            }`}
             value={value}
             onChange={(e) => updateField(f.key, e.target.value)}
             placeholder={`Enter ${f.label}`}
@@ -402,7 +726,9 @@ const FormEditorCard = ({ formDraft, setFormDraft, onSave, saving, saveMsg }) =>
                   <span className="premiumMetaDot" />
                   Draft
                 </div>
-                <div className={`premiumMetaBadge ${formReady ? "ready" : "pending"}`}>
+                <div
+                  className={`premiumMetaBadge ${formReady ? "ready" : "pending"}`}
+                >
                   <span className="premiumMetaDot" />
                   {formReady ? "Ready to save" : "Needs attention"}
                 </div>
@@ -429,7 +755,11 @@ const FormEditorCard = ({ formDraft, setFormDraft, onSave, saving, saveMsg }) =>
             </div>
           </div>
 
-          <div className={`premiumFormSection ${customerSectionComplete ? "is-complete" : ""}`}>
+          <div
+            className={`premiumFormSection ${
+              customerSectionComplete ? "is-complete" : ""
+            }`}
+          >
             <div className="premiumSectionHeader">
               <div className="premiumSectionTitle">Customer Details</div>
               {customerSectionComplete ? (
@@ -448,7 +778,11 @@ const FormEditorCard = ({ formDraft, setFormDraft, onSave, saving, saveMsg }) =>
             </div>
           </div>
 
-          <div className={`premiumFormSection ${requestSectionComplete ? "is-complete" : ""}`}>
+          <div
+            className={`premiumFormSection ${
+              requestSectionComplete ? "is-complete" : ""
+            }`}
+          >
             <div className="premiumSectionHeader">
               <div className="premiumSectionTitle">Request Details</div>
               {requestSectionComplete ? (
@@ -469,7 +803,9 @@ const FormEditorCard = ({ formDraft, setFormDraft, onSave, saving, saveMsg }) =>
             <div className="premiumFormGroup premiumPriorityGroup">
               <label className="premiumFormLabel">
                 {priorityField.label}
-                {priorityField.required ? <span className="premiumFormReq">*</span> : null}
+                {priorityField.required ? (
+                  <span className="premiumFormReq">*</span>
+                ) : null}
               </label>
 
               <div className="premiumFieldHelp">
@@ -523,13 +859,26 @@ const FormEditorCard = ({ formDraft, setFormDraft, onSave, saving, saveMsg }) =>
               </button>
 
               <button
+                type="button"
+                className="premiumGhostBtn"
+                onClick={onSave}
+                disabled={saving || submittingForReview || isSubmitted}
+              >
+                {saving ? "Saving..." : "Save Draft"}
+              </button>
+
+              <button
                 className={`formSaveBtn premiumFormSaveBtn ${
                   isSubmitted ? "submitted" : ""
                 }`}
-                onClick={onSave}
-                disabled={saving || isSubmitted}
+                onClick={onSubmitForReview}
+                disabled={saving || submittingForReview || isSubmitted || !formReady}
               >
-                {isSubmitted ? "Submitted" : saving ? "Submitting..." : "Submit"}
+                {isSubmitted
+                  ? "Submitted"
+                  : submittingForReview
+                  ? "Submitting..."
+                  : "Submit for Review"}
               </button>
             </div>
 
@@ -546,28 +895,36 @@ const FormEditorCard = ({ formDraft, setFormDraft, onSave, saving, saveMsg }) =>
             <div className="requestSummaryItem">
               <div className="requestSummaryLabel">Customer</div>
               <div className="requestSummaryValue">
-                {customerName || <span className="requestSummaryMuted">Not provided</span>}
+                {customerName || (
+                  <span className="requestSummaryMuted">Not provided</span>
+                )}
               </div>
             </div>
 
             <div className="requestSummaryItem">
               <div className="requestSummaryLabel">Part Name</div>
               <div className="requestSummaryValue">
-                {customerPartName || <span className="requestSummaryMuted">Not provided</span>}
+                {customerPartName || (
+                  <span className="requestSummaryMuted">Not provided</span>
+                )}
               </div>
             </div>
 
             <div className="requestSummaryItem">
               <div className="requestSummaryLabel">Part Number</div>
               <div className="requestSummaryValue">
-                {customerPartNumber || <span className="requestSummaryMuted">Not provided</span>}
+                {customerPartNumber || (
+                  <span className="requestSummaryMuted">Not provided</span>
+                )}
               </div>
             </div>
 
             <div className="requestSummaryItem">
               <div className="requestSummaryLabel">Priority</div>
               <div className="requestSummaryValue">
-                {selectedPriority || <span className="requestSummaryMuted">Not selected</span>}
+                {selectedPriority || (
+                  <span className="requestSummaryMuted">Not selected</span>
+                )}
               </div>
             </div>
 
@@ -590,13 +947,16 @@ const FormEditorCard = ({ formDraft, setFormDraft, onSave, saving, saveMsg }) =>
               {missingRequired.map((item) => (
                 <div key={item.key} className="requestMissingItem">
                   <div className="requestMissingIcon">!</div>
-                  <div className="requestMissingText">{item.label} is still required.</div>
+                  <div className="requestMissingText">
+                    {item.label} is still required.
+                  </div>
                 </div>
               ))}
             </div>
           ) : (
             <div className="requestReadyBox">
-              All required fields are completed. The request is ready to be reviewed and saved.
+              All required fields are completed. The request is ready to be
+              reviewed and saved.
             </div>
           )}
         </div>
@@ -609,13 +969,29 @@ const FormEditorCard = ({ formDraft, setFormDraft, onSave, saving, saveMsg }) =>
    ✅ Inline Customer Request Starter
    =============================== */
 const parseRequestSuggestion = (item) => {
-  const rawSessionId = String(item?.sessionId || "");
-  const rawTitle = String(item?.title || "");
+  const rawSessionId = String(
+    item?.requestId || item?.sessionId || item?.SessionId || ""
+  );
+  const rawTitle = String(
+    item?.title || item?.customerPartName || item?.partName || ""
+  );
+
+  const explicitPartNumber = String(
+    item?.customerPartNumber || item?.partNumber || item?.CustomerPartNumber || ""
+  ).trim();
+
+  const explicitPartName = String(
+    item?.customerPartName ||
+      item?.partName ||
+      item?.CustomerPartName ||
+      (rawTitle.toLowerCase().includes("my assistant") ? "" : rawTitle) ||
+      ""
+  ).trim();
 
   const parts = rawSessionId.split("#");
   const requestId = parts[0] || rawSessionId || "Request";
-  const partNumber = parts[1] || "";
-  const partName = parts.slice(2).join(" ") || rawTitle || "";
+  const partNumber = explicitPartNumber || parts[1] || "";
+  const partName = explicitPartName || parts.slice(2).join(" ") || rawTitle || "";
 
   return {
     requestId,
@@ -624,35 +1000,170 @@ const parseRequestSuggestion = (item) => {
   };
 };
 
+const normalizeSuggestionStatus = (rawStatus = "") => {
+  const raw = String(rawStatus || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "_")
+    .replace(/-/g, "_");
+
+  if (!raw) return "UNKNOWN";
+
+  if (
+    raw === "SUBMITTED_FOR_REVIEW" ||
+    raw === "REQUEST_REVIEW" ||
+    raw === "REQUEST_REVIEWED" ||
+    raw === "REQUEST_REVIEW_PENDING"
+  ) {
+    return "SUBMITTED_FOR_REVIEW";
+  }
+
+  if (
+    raw === "IN_PROGRESS" ||
+    raw === "REQUEST_IN_PROGRESS" ||
+    raw === "REQUEST_PROGRESS"
+  ) {
+    return "IN_PROGRESS";
+  }
+
+  if (raw === "ON_HOLD" || raw === "REQUEST_ON_HOLD" || raw === "HOLD") {
+    return "ON_HOLD";
+  }
+
+  if (raw === "COMPLETED" || raw === "REQUEST_COMPLETED" || raw === "DONE") {
+    return "COMPLETED";
+  }
+
+  if (
+    raw === "PENDING" ||
+    raw === "REQUEST_PENDING" ||
+    raw === "REQUEST_CREATE" ||
+    raw === "REQUEST_CREATED"
+  ) {
+    return "PENDING";
+  }
+
+  return raw;
+};
+
+const getSuggestionStatusValue = (item) => {
+  const raw = String(
+    item?.requestStatus ||
+      item?.status ||
+      item?.RequestStatus ||
+      item?.Status ||
+      ""
+  );
+  return normalizeSuggestionStatus(raw);
+};
+
+const getSuggestionStatusLabel = (item) => {
+  const value = getSuggestionStatusValue(item);
+  return value.replace(/_/g, "-");
+};
+
+const getSuggestionDateValue = (item) => {
+  return (
+    item?.stateEnteredAt ||
+    item?.statusUpdatedAt ||
+    item?.updatedAt ||
+    item?.lastUpdatedAt ||
+    item?.requestUpdatedAt ||
+    item?.RequestUpdatedDateTime ||
+    item?.RequestLoggedDateTime ||
+    item?.createdAt ||
+    item?.requestCreatedAt ||
+    item?.RequestCreatedAt ||
+    item?.createdDate ||
+    item?.CreatedAt ||
+    ""
+  );
+};
+
+const getSuggestionAgeLabel = (item) => {
+  const directAge =
+    item?.ageDays ??
+    item?.daysInState ??
+    item?.AgeDays ??
+    item?.DaysInState;
+
+  if (directAge !== undefined && directAge !== null && directAge !== "") {
+    const num = Number(directAge);
+    if (!Number.isNaN(num) && num >= 0) {
+      return `Age: ${num} day${num === 1 ? "" : "s"}`;
+    }
+  }
+
+  const rawDate = getSuggestionDateValue(item);
+  if (!rawDate) return "Age: --";
+
+  const parsed = new Date(rawDate);
+  if (Number.isNaN(parsed.getTime())) return "Age: --";
+
+  const now = new Date();
+  const diffMs = now.getTime() - parsed.getTime();
+  const diffDays = Math.max(0, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
+
+  return `Age: ${diffDays} day${diffDays === 1 ? "" : "s"}`;
+};
+
 const InlineCustomerRequestStarterCard = ({
   suggestions = [],
   onOpenExistingCustomerRequest,
   onStartNewCustomerRequest,
   disableStartNew = false,
+  onSearchExistingCustomerRequests,
+  existingRequestsLoading = false,
 }) => {
   const [mode, setMode] = useState("choice");
   const [query, setQuery] = useState("");
+  const [existingStatusFilter, setExistingStatusFilter] = useState("ALL");
+
+  useEffect(() => {
+    if (mode !== "existing") return;
+
+    const t = setTimeout(() => {
+      onSearchExistingCustomerRequests?.(query, existingStatusFilter);
+    }, 350);
+
+    return () => clearTimeout(t);
+  }, [mode, query, existingStatusFilter, onSearchExistingCustomerRequests]);
 
   const filteredSuggestions = useMemo(() => {
     const q = String(query || "").toLowerCase().trim();
     const list = Array.isArray(suggestions) ? suggestions : [];
 
     const clean = list.filter((s) => {
-      const title = String(s?.title || "").toLowerCase();
-      const sid = String(s?.sessionId || "").toLowerCase();
-      return !!sid && !title.includes("monitoring");
+      const title = String(
+        s?.title || s?.customerPartName || s?.partName || ""
+      ).toLowerCase();
+      const sid = String(s?.sessionId || s?.requestId || "").toLowerCase();
+      if (!sid || title.includes("monitoring")) return false;
+
+      const statusValue = getSuggestionStatusValue(s);
+      if (existingStatusFilter !== "ALL" && statusValue !== existingStatusFilter) {
+        return false;
+      }
+
+      return true;
     });
 
-    if (!q) return clean.slice(0, 5);
+    if (!q) return clean.slice(0, 8);
 
     return clean
       .filter((s) => {
-        const title = String(s?.title || "").toLowerCase();
-        const sid = String(s?.sessionId || "").toLowerCase();
-        return title.includes(q) || sid.includes(q);
+        const parsed = parseRequestSuggestion(s);
+        const statusLabel = getSuggestionStatusLabel(s).toLowerCase();
+
+        return (
+          String(parsed.requestId || "").toLowerCase().includes(q) ||
+          String(parsed.partName || "").toLowerCase().includes(q) ||
+          String(parsed.partNumber || "").toLowerCase().includes(q) ||
+          statusLabel.includes(q)
+        );
       })
-      .slice(0, 6);
-  }, [query, suggestions]);
+      .slice(0, 10);
+  }, [query, suggestions, existingStatusFilter]);
 
   const isExistingOpen = mode === "existing";
 
@@ -671,21 +1182,6 @@ const InlineCustomerRequestStarterCard = ({
         answers will help me populate the customer request form exactly to your
         needs.
       </p>
-
-      <div className="customer-request-topbar">
-        <div className="customer-request-pill info">
-          <span className="customer-request-pill-dot" />
-          Guided Workflow
-        </div>
-        <div className="customer-request-pill success">
-          <span className="customer-request-pill-dot" />
-          Structured Form
-        </div>
-        <div className="customer-request-pill warning">
-          <span className="customer-request-pill-dot" />
-          Review Before Save
-        </div>
-      </div>
 
       <div className="customer-request-mini-flow">
         <div className="customer-request-mini-step">
@@ -733,7 +1229,9 @@ const InlineCustomerRequestStarterCard = ({
           className={`customer-request-option-card ${
             isExistingOpen ? "customer-request-option-card-open" : ""
           }`}
-          onClick={() => setMode((prev) => (prev === "existing" ? "choice" : "existing"))}
+          onClick={() =>
+            setMode((prev) => (prev === "existing" ? "choice" : "existing"))
+          }
           aria-expanded={isExistingOpen}
         >
           <div className="customer-request-option-top">
@@ -745,7 +1243,11 @@ const InlineCustomerRequestStarterCard = ({
               <div className="customer-request-option-title">
                 Work on existing request
               </div>
-              <div className={`customer-request-chevron ${isExistingOpen ? "open" : ""}`}>
+              <div
+                className={`customer-request-chevron ${
+                  isExistingOpen ? "open" : ""
+                }`}
+              >
                 <ChevronDown size={18} strokeWidth={2.2} />
               </div>
             </div>
@@ -764,12 +1266,66 @@ const InlineCustomerRequestStarterCard = ({
       >
         {isExistingOpen && (
           <>
-            <div className="customer-request-search-header">
-              <div className="customer-request-search-label">
-                Search existing requests
+            <div
+              className="customer-request-search-header"
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                justifyContent: "space-between",
+                gap: "12px",
+                flexWrap: "wrap",
+              }}
+            >
+              <div>
+                <div className="customer-request-search-label">
+                  Search existing requests
+                </div>
               </div>
-              <div className="customer-request-search-subtext">
-                Open an existing request and continue in the same request session.
+
+              <div
+                className="customer-request-status-filter"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  marginLeft: "auto",
+                }}
+              >
+                <label
+                  htmlFor="existing-request-status-filter"
+                  style={{
+                    fontSize: "12px",
+                    fontWeight: 600,
+                    color: "#6b7a90",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  Status
+                </label>
+                <select
+                  id="existing-request-status-filter"
+                  value={existingStatusFilter}
+                  onChange={(e) => setExistingStatusFilter(e.target.value)}
+                  style={{
+                    minWidth: "170px",
+                    height: "36px",
+                    borderRadius: "10px",
+                    border: "1px solid #dbe3f0",
+                    padding: "0 12px",
+                    background: "#fff",
+                    color: "#24324a",
+                    fontSize: "13px",
+                    fontWeight: 500,
+                    outline: "none",
+                  }}
+                >
+                  <option value="ALL">All</option>
+                  <option value="IN_PROGRESS">IN-PROGRESS</option>
+                  <option value="PENDING">PENDING</option>
+                  <option value="ON_HOLD">ON-HOLD</option>
+                  <option value="COMPLETED">COMPLETED</option>
+                  <option value="SUBMITTED_FOR_REVIEW">SUBMITTED-FOR-REVIEW</option>
+                </select>
               </div>
             </div>
 
@@ -780,43 +1336,81 @@ const InlineCustomerRequestStarterCard = ({
               placeholder="Type request ID, part name, or part number..."
             />
 
-            {!!filteredSuggestions.length && (
-              <div className="customer-request-suggestions">
-                {filteredSuggestions.map((item) => {
-                  const parsed = parseRequestSuggestion(item);
+            {!!filteredSuggestions.length ? (
+              <>
+                <div className="customer-request-suggestions">
+                  {filteredSuggestions.map((item) => {
+                    const parsed = parseRequestSuggestion(item);
+                    const statusLabel = getSuggestionStatusLabel(item);
+                    const ageLabel = getSuggestionAgeLabel(item);
+                    const openId =
+                      item.sessionId ||
+                      item.requestId ||
+                      item.SessionId ||
+                      parsed.requestId;
 
-                  return (
-                    <button
-                      key={item.sessionId}
-                      type="button"
-                      className="customer-request-suggestion-btn"
-                      onClick={() => onOpenExistingCustomerRequest?.(item.sessionId)}
-                    >
-                      <div className="customer-request-suggestion-top">
-                        <div className="customer-request-suggestion-title">
-                          {parsed.requestId}
+                    return (
+                      <button
+                        key={openId}
+                        type="button"
+                        className="customer-request-suggestion-btn"
+                        onClick={() => onOpenExistingCustomerRequest?.(openId)}
+                      >
+                        <div
+                          className="customer-request-suggestion-top"
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "flex-start",
+                            gap: "12px",
+                          }}
+                        >
+                          <div style={{ minWidth: 0, flex: 1 }}>
+                            <div className="customer-request-suggestion-title">
+                              {parsed.requestId}
+                            </div>
+
+                            <div className="customer-request-suggestion-sub single-line">
+                              <span className="part-name">
+                                {parsed.partName || "Open this request"}
+                              </span>
+
+                              {!!parsed.partNumber && (
+                                <span className="part-number"> • {parsed.partNumber}</span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div
+                            style={{
+                              display: "flex",
+                              flexDirection: "column",
+                              alignItems: "flex-end",
+                              gap: "4px",
+                              flexShrink: 0,
+                              textAlign: "right",
+                            }}
+                          >
+                            <div className="customer-request-suggestion-status">
+                              {statusLabel}
+                            </div>
+                            <div className="customer-request-suggestion-age">
+                              {ageLabel}
+                            </div>
+                          </div>
                         </div>
-                        <div className="customer-request-suggestion-badge">
-                          Existing
-                        </div>
-                      </div>
+                      </button>
+                    );
+                  })}
+                </div>
 
-                      <div className="customer-request-suggestion-sub single-line">
-                        <span className="part-name">
-                          {parsed.partName || "Open this request"}
-                        </span>
-
-                        {!!parsed.partNumber && (
-                          <span className="part-number">• {parsed.partNumber}</span>
-                        )}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-
-            {!filteredSuggestions.length && (
+                {existingRequestsLoading ? (
+                  <div className="customer-request-search-subtext">Refreshing...</div>
+                ) : null}
+              </>
+            ) : existingRequestsLoading ? (
+              <div className="customer-request-empty">Loading requests...</div>
+            ) : (
               <div className="customer-request-empty">
                 No matching requests found yet.
               </div>
@@ -826,7 +1420,8 @@ const InlineCustomerRequestStarterCard = ({
       </div>
 
       <div className="customer-request-helper-note">
-        Continue an existing request or start a new guided workflow from this assistant.
+        Continue an existing request or start a new guided workflow from this
+        assistant.
       </div>
     </div>
   );
@@ -927,15 +1522,24 @@ const ChatWindow = ({
   const [showForm, setShowForm] = useState(false);
   const [formDraft, setFormDraft] = useState(null);
   const [savingForm, setSavingForm] = useState(false);
+  const [submittingForReview, setSubmittingForReview] = useState(false);
   const [formSaveMsg, setFormSaveMsg] = useState("");
+  const [formInsertIndex, setFormInsertIndex] = useState(null);
 
   const [isStartingCustomerRequest, setIsStartingCustomerRequest] = useState(false);
+
+  const [liveCustomerRequestSuggestions, setLiveCustomerRequestSuggestions] = useState(
+    Array.isArray(customerRequestSuggestions) ? customerRequestSuggestions : []
+  );
+  const [existingRequestsLoading, setExistingRequestsLoading] = useState(false);
 
   const scrollRef = useRef(null);
   const textareaRef = useRef(null);
   const uploadBtnRef = useRef(null);
 
   const chatIdRef = useRef(chat?.id);
+  const visibleMessageCountRef = useRef(0);
+  const customerRequestSearchSeqRef = useRef(0);
 
   useLayoutEffect(() => {
     chatIdRef.current = chat?.id;
@@ -944,12 +1548,19 @@ const ChatWindow = ({
   useEffect(() => {
     if (!scrollRef.current) return;
     scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [chat?.messages, isTyping, showForm]);
+  }, [chat?.messages, isTyping, showForm, formInsertIndex]);
 
   useEffect(() => {
     setFormSaveMsg("");
     setIsStartingCustomerRequest(false);
+    setFormInsertIndex(null);
   }, [chat?.id]);
+
+  useEffect(() => {
+    setLiveCustomerRequestSuggestions(
+      Array.isArray(customerRequestSuggestions) ? customerRequestSuggestions : []
+    );
+  }, [customerRequestSuggestions]);
 
   const hasValidFormState = (state) => {
     if (!state || typeof state !== "object") return false;
@@ -972,20 +1583,6 @@ const ChatWindow = ({
     );
   };
 
-  useEffect(() => {
-    if (hasValidFormState(formState)) {
-      const hydrated = buildCustomerRequestFormDraft(formState);
-      setShowForm(true);
-      setFormDraft(hydrated);
-      setFormSaveMsg("");
-      return;
-    }
-
-    setShowForm(false);
-    setFormDraft(null);
-    setFormSaveMsg("");
-  }, [formState, chat?.id]);
-
   const addMessage = (msg) => {
     const sender = msg.sender || (msg.role === "assistant" ? "bot" : "user");
 
@@ -999,6 +1596,12 @@ const ChatWindow = ({
 
     const attachmentsRaw = msg.attachments ?? msg.Attachments ?? [];
     const attachments = Array.isArray(attachmentsRaw) ? attachmentsRaw : [];
+
+    const emailDraft =
+      msg.emailDraft ||
+      (sender === "bot" && looksLikeEmailDraft(text)
+        ? parseEmailDraftFromText(text, user?.email || "")
+        : null);
 
     updateMessages((prev) => [
       ...prev,
@@ -1015,6 +1618,7 @@ const ChatWindow = ({
         question: msg.question || null,
         options: Array.isArray(msg.options) ? msg.options : [],
         inputType: msg.inputType || null,
+        emailDraft,
       },
     ]);
   };
@@ -1034,6 +1638,12 @@ const ChatWindow = ({
       const attachmentsRaw = m.attachments ?? m.Attachments ?? [];
       const attachments = Array.isArray(attachmentsRaw) ? attachmentsRaw : [];
 
+      const emailDraft =
+        m.emailDraft ||
+        (sender === "bot" && looksLikeEmailDraft(text)
+          ? parseEmailDraftFromText(text, user?.email || "")
+          : null);
+
       return {
         id: m.id || `msg-${i}`,
         sender,
@@ -1047,8 +1657,109 @@ const ChatWindow = ({
         question: m.question || null,
         options: Array.isArray(m.options) ? m.options : [],
         inputType: m.inputType || null,
+        emailDraft,
       };
     });
+
+  const cleanedMessages = useMemo(() => {
+    const raw = chat?.messages || [];
+
+    const flowQuestions = new Set(
+      raw
+        .filter((m) => m?.flowType === "customer_request")
+        .map((m) => String(m?.question || "").trim().toLowerCase())
+        .filter(Boolean)
+    );
+
+    return raw.filter((m, idx) => {
+      const sender = extractMessageSender(m);
+      const text = String(extractMessageText(m) || "").trim().toLowerCase();
+
+      if (isSystemFlowMarkerText(text)) return false;
+
+      if (isCustomerRequestStarterSession) {
+        if (m?.flowType === "customer_request") return false;
+        if (text === "create a new customer request") return false;
+        if (text === "select customer name") return false;
+        if (text === "select customer part name") return false;
+        if (text === "select customer part number") return false;
+        if (text === "select customer part name and number") return false;
+        if (text === "enter customer name") return false;
+        if (text === "enter customer part name") return false;
+        if (text === "enter customer part number") return false;
+      }
+
+      const hasAttachments =
+        Array.isArray(m?.attachments) && m.attachments.length > 0;
+      const hasArtifact = !!m?.artifact;
+      const isFlowCard = m?.flowType === "customer_request";
+      const isEmail =
+        !!m?.emailDraft || (sender === "bot" && looksLikeEmailDraft(text));
+
+      const next = raw[idx + 1];
+      const prev = raw[idx - 1];
+      const nextQuestion = String(next?.question || "").trim().toLowerCase();
+      const prevQuestion = String(prev?.question || "").trim().toLowerCase();
+
+      const isPlainAssistantFlowPrompt =
+        sender === "bot" &&
+        !hasAttachments &&
+        !hasArtifact &&
+        !isFlowCard &&
+        !isEmail &&
+        !!text &&
+        (flowQuestions.has(text) ||
+          text === nextQuestion ||
+          text === prevQuestion);
+
+      if (isPlainAssistantFlowPrompt) return false;
+
+      return true;
+    });
+  }, [chat?.messages, isCustomerRequestStarterSession]);
+
+  const normalizedMessages = useMemo(
+    () => normalize(cleanedMessages),
+    [cleanedMessages, user?.email]
+  );
+
+  useEffect(() => {
+    visibleMessageCountRef.current = normalizedMessages.length;
+  }, [normalizedMessages.length]);
+
+  const openFormInline = (nextDraft, options = {}) => {
+    const { afterNextMessage = false } = options;
+
+    setShowForm(true);
+    setFormDraft(nextDraft);
+    setFormSaveMsg("");
+
+    setFormInsertIndex((prev) => {
+      if (prev !== null) return prev;
+      return visibleMessageCountRef.current + (afterNextMessage ? 1 : 0);
+    });
+  };
+
+  useEffect(() => {
+    if (hasValidFormState(formState)) {
+      const hydrated = buildCustomerRequestFormDraft(formState);
+      setShowForm(true);
+      setFormDraft(hydrated);
+      setFormSaveMsg("");
+
+      setFormInsertIndex((prev) => {
+        if (prev !== null) return prev;
+        return getPersistedFormInsertIndex(normalizedMessages);
+      });
+
+      return;
+    }
+
+    setShowForm(false);
+    setFormDraft(null);
+    setFormSaveMsg("");
+    setFormInsertIndex(null);
+  }, [formState, chat?.id, normalizedMessages]);
 
   const AttachmentRow = ({ att }) => {
     const name = att.fileName || att.name || "file";
@@ -1194,6 +1905,36 @@ const ChatWindow = ({
     return fallbackSessionId;
   };
 
+  const handleSearchExistingCustomerRequests = useCallback(
+    async (query = "", statusFilter = "ALL") => {
+      if (!user?.email) return;
+
+      const seq = Date.now() + Math.random();
+      customerRequestSearchSeqRef.current = seq;
+      setExistingRequestsLoading(true);
+
+      try {
+        const token = await getAccessToken();
+
+        const res = await searchCustomerRequests(token, query, "ALL");
+
+        if (customerRequestSearchSeqRef.current !== seq) return;
+
+        const items = Array.isArray(res?.items) ? res.items : [];
+        setLiveCustomerRequestSuggestions(items);
+      } catch (e) {
+        console.error("Customer request search failed:", e);
+        if (customerRequestSearchSeqRef.current !== seq) return;
+        setLiveCustomerRequestSuggestions([]);
+      } finally {
+        if (customerRequestSearchSeqRef.current === seq) {
+          setExistingRequestsLoading(false);
+        }
+      }
+    },
+    [user?.email]
+  );
+
   const handleFileSelect = async (file) => {
     const currentChatId = chat?.id || chatIdRef.current;
     if (!file || !currentChatId || !user) return;
@@ -1326,6 +2067,29 @@ const ChatWindow = ({
     setPendingDocTypeAtt(null);
   };
 
+  const buildNormalizedFormPayload = () => {
+    const baseDraft = formDraft || {};
+
+    const normalizedPayload = {
+      CustomerName: baseDraft.CustomerName || "",
+      CustomerPartName: baseDraft.CustomerPartName || "",
+      CustomerPartNumber: baseDraft.CustomerPartNumber || "",
+      RequestDescription: baseDraft.RequestDescription || "",
+      RequestCompletionDate: baseDraft.RequestCompletionDate || "",
+      RequestPriority: baseDraft.RequestPriority || "Medium",
+    };
+
+    if (Array.isArray(baseDraft.fields)) {
+      for (const f of baseDraft.fields) {
+        if (f?.key) {
+          normalizedPayload[f.key] = f.value ?? "";
+        }
+      }
+    }
+
+    return normalizedPayload;
+  };
+
   const handleSaveForm = async () => {
     if (!formDraft || !user?.email) return;
 
@@ -1336,23 +2100,7 @@ const ChatWindow = ({
       const token = await getAccessToken();
 
       const workingSessionId = chatIdRef.current || chat?.id || "default-chat";
-
-      const normalizedPayload = {
-        CustomerName: formDraft.CustomerName || "",
-        CustomerPartName: formDraft.CustomerPartName || "",
-        CustomerPartNumber: formDraft.CustomerPartNumber || "",
-        RequestDescription: formDraft.RequestDescription || "",
-        RequestCompletionDate: formDraft.RequestCompletionDate || "",
-        RequestPriority: formDraft.RequestPriority || "Medium",
-      };
-
-      if (Array.isArray(formDraft.fields)) {
-        for (const f of formDraft.fields) {
-          if (f?.key) {
-            normalizedPayload[f.key] = f.value ?? "";
-          }
-        }
-      }
+      const normalizedPayload = buildNormalizedFormPayload();
 
       const requestBody = {
         session: {
@@ -1379,6 +2127,64 @@ const ChatWindow = ({
       setFormSaveMsg(`❌ ${msg}`);
     } finally {
       setSavingForm(false);
+    }
+  };
+
+  const handleSubmitForReview = async () => {
+    if (!formDraft || !user?.email) return;
+
+    setSubmittingForReview(true);
+    setFormSaveMsg("");
+
+    try {
+      const token = await getAccessToken();
+      const workingSessionId = chatIdRef.current || chat?.id || "default-chat";
+      const normalizedPayload = buildNormalizedFormPayload();
+
+      const requestBody = {
+        session: {
+          SessionId: workingSessionId,
+        },
+        payload: {
+          ...normalizedPayload,
+          submitForReview: true,
+        },
+      };
+
+      const res = await saveGeneratedForm(requestBody, token);
+
+      setFormSaveMsg("✅ Submitted for review");
+
+      const nextSavedDraft = buildCustomerRequestFormDraft({
+        ...formDraft,
+        ...normalizedPayload,
+      });
+
+      setFormDraft(nextSavedDraft);
+      onFormStateChange?.(workingSessionId, nextSavedDraft);
+
+      const adoptedSessionId = await adoptSessionFromResponse(
+        res,
+        workingSessionId
+      );
+
+      if (res?.reviewChatReply) {
+        addMessage({
+          sender: "bot",
+          role: "assistant",
+          text: res.reviewChatReply,
+        });
+      }
+
+      if (adoptedSessionId) {
+        chatIdRef.current = adoptedSessionId;
+      }
+    } catch (e) {
+      console.error("Submit for review failed:", e);
+      const msg = e?.message || "Submit for review failed";
+      setFormSaveMsg(`❌ ${msg}`);
+    } finally {
+      setSubmittingForReview(false);
     }
   };
 
@@ -1496,9 +2302,8 @@ const ChatWindow = ({
           role: "assistant",
           text: res?.reply || "I have prepared the customer request form.",
         });
-        setShowForm(true);
-        setFormDraft(hydrated);
-        setFormSaveMsg("");
+
+        openFormInline(hydrated, { afterNextMessage: true });
         onFormStateChange?.(workingSessionId, hydrated);
         return;
       }
@@ -1536,6 +2341,97 @@ const ChatWindow = ({
 
   const handleManualFlowSubmit = async (value) => {
     await continueFlowWithValue(value);
+  };
+
+  const handleSaveEmailDraft = (draft) => {
+    updateMessages((prev) =>
+      prev.map((m, idx) => {
+        const sender = m.sender || (m.role === "assistant" ? "bot" : "user");
+        const text =
+          m.text ??
+          (typeof m.content === "string"
+            ? m.content
+            : Array.isArray(m.content) && m.content[0]?.text
+            ? m.content[0].text
+            : "");
+
+        const existingDraft =
+          m.emailDraft ||
+          (sender === "bot" && looksLikeEmailDraft(text)
+            ? parseEmailDraftFromText(text, user?.email || "")
+            : null);
+
+        if (existingDraft && idx === prev.length - 1) {
+          return {
+            ...m,
+            emailDraft: draft,
+          };
+        }
+        return m;
+      })
+    );
+  };
+
+  const handleSendEmailDraft = async (draft) => {
+    try {
+      const to = String(draft?.to || "").trim();
+      const subject = String(draft?.subject || "").trim();
+      const body = String(draft?.body || "").trim();
+
+      if (!to) {
+        addMessage({
+          sender: "bot",
+          role: "assistant",
+          text: "❌ Please enter recipient email before sending.",
+        });
+        return;
+      }
+
+      if (!subject) {
+        addMessage({
+          sender: "bot",
+          role: "assistant",
+          text: "❌ Please enter email subject before sending.",
+        });
+        return;
+      }
+
+      if (!body) {
+        addMessage({
+          sender: "bot",
+          role: "assistant",
+          text: "❌ Please enter email body before sending.",
+        });
+        return;
+      }
+
+      const token = await getAccessToken();
+      const workingSessionId = chatIdRef.current || chat?.id || "default-chat";
+
+      const res = await sendCustomerEmail(
+        {
+          sessionId: workingSessionId,
+          userId: user?.email,
+          to,
+          subject,
+          body,
+        },
+        token
+      );
+
+      addMessage({
+        sender: "bot",
+        role: "assistant",
+        text: res?.reply || `✅ Email sent successfully to ${to}`,
+      });
+    } catch (e) {
+      console.error("Send email failed:", e);
+      addMessage({
+        sender: "bot",
+        role: "assistant",
+        text: `❌ ${e?.message || "Failed to send email"}`,
+      });
+    }
   };
 
   const handleSend = async () => {
@@ -1613,15 +2509,11 @@ const ChatWindow = ({
 
       if (res?.formState) {
         const hydrated = buildCustomerRequestFormDraft(res.formState);
-        setShowForm(true);
-        setFormDraft(hydrated);
-        setFormSaveMsg("");
+        openFormInline(hydrated, { afterNextMessage: true });
         onFormStateChange?.(workingSessionId, hydrated);
       } else if (wantsForm) {
         const nextDraft = formDraft || defaultFormTemplate();
-        setShowForm(true);
-        setFormDraft(nextDraft);
-        setFormSaveMsg("");
+        openFormInline(nextDraft, { afterNextMessage: true });
         onFormStateChange?.(workingSessionId, nextDraft);
       }
 
@@ -1659,45 +2551,39 @@ const ChatWindow = ({
 
   const hasUploading = pendingAttachments.some((a) => a.uploading);
 
-  const starterCleanMessages = useMemo(() => {
-    const raw = chat?.messages || [];
-
-    if (!isCustomerRequestStarterSession) {
-      return raw;
-    }
-
-    return raw.filter((m) => {
-      const text =
-        m?.text ??
-        (typeof m?.content === "string"
-          ? m.content
-          : Array.isArray(m?.content) && m.content[0]?.text
-          ? m.content[0].text
-          : "");
-
-      const cleanText = String(text || "").trim().toLowerCase();
-
-      if (m?.flowType === "customer_request") return false;
-      if (cleanText === "create a new customer request") return false;
-      if (cleanText === "select customer name") return false;
-      if (cleanText === "select customer part name") return false;
-      if (cleanText === "select customer part number") return false;
-      if (cleanText === "enter customer name") return false;
-      if (cleanText === "enter customer part name") return false;
-      if (cleanText === "enter customer part number") return false;
-
-      return true;
-    });
-  }, [chat?.messages, isCustomerRequestStarterSession]);
-
-  const normalizedMessages = normalize(starterCleanMessages);
-
   const shouldShowWelcome =
     !isCustomerRequestStarterSession &&
-    (!starterCleanMessages || starterCleanMessages.length === 0);
+    (!cleanedMessages || cleanedMessages.length === 0);
 
   const showInlineCustomerStarter =
     isCustomerRequestStarterSession && !showForm;
+
+  const renderFormMessageRow = (key) => (
+    <div key={key} className="msg-row bot">
+      <div className="msg-bubble">
+        <FormEditorCard
+          formDraft={formDraft}
+          setFormDraft={(updater) => {
+            setFormDraft((prev) =>
+              typeof updater === "function" ? updater(prev) : updater
+            );
+          }}
+          onSave={handleSaveForm}
+          onSubmitForReview={handleSubmitForReview}
+          saving={savingForm}
+          submittingForReview={submittingForReview}
+          saveMsg={formSaveMsg}
+        />
+      </div>
+    </div>
+  );
+
+  const shouldRenderFormAtTop = showForm && formDraft && formInsertIndex === 0;
+
+  const shouldRenderFormAtEnd =
+    showForm &&
+    formDraft &&
+    (formInsertIndex === null || formInsertIndex >= normalizedMessages.length);
 
   return (
     <main className="chat-main chat-layout">
@@ -1718,7 +2604,7 @@ const ChatWindow = ({
 
       <div
         className={`messages ${
-          !starterCleanMessages || starterCleanMessages.length === 0
+          !cleanedMessages || cleanedMessages.length === 0
             ? "messages-empty"
             : ""
         }`}
@@ -1734,35 +2620,62 @@ const ChatWindow = ({
               <div className="msg-row bot">
                 <div className="msg-bubble msg-bubble-inline-card">
                   <InlineCustomerRequestStarterCard
-                    suggestions={customerRequestSuggestions}
+                    suggestions={liveCustomerRequestSuggestions}
                     onOpenExistingCustomerRequest={onOpenExistingCustomerRequest}
                     onStartNewCustomerRequest={handleStartNewCustomerRequest}
                     disableStartNew={isStartingCustomerRequest || isTyping}
+                    onSearchExistingCustomerRequests={
+                      handleSearchExistingCustomerRequests
+                    }
+                    existingRequestsLoading={existingRequestsLoading}
                   />
                 </div>
               </div>
             )}
 
+            {shouldRenderFormAtTop && renderFormMessageRow("inline-form-top")}
+
             {normalizedMessages.map((m, index) => (
-              <div key={m.id || index} className={`msg-row ${m.sender}`}>
-                <div className="msg-bubble">
-                  {m.flowType === "customer_request" ? (
-                    <CustomerRequestStepCard
-                      message={m}
-                      onSelectOption={handleFlowOptionSelect}
-                      onSubmitManualInput={handleManualFlowSubmit}
-                    />
-                  ) : (
-                    <MarkdownRenderer
-                      text={m.text || ""}
-                      onRequestRowClick={handleRequestRowClick}
-                    />
-                  )}
-                  {renderArtifact(m)}
-                  {renderAttachments(m.attachments)}
+              <React.Fragment key={m.id || index}>
+                {showForm &&
+                  formDraft &&
+                  formInsertIndex === index &&
+                  renderFormMessageRow(`inline-form-before-${index}`)}
+
+                <div className={`msg-row ${m.sender}`}>
+                  <div className="msg-bubble">
+                    {m.flowType === "customer_request" ? (
+                      <CustomerRequestStepCard
+                        message={m}
+                        onSelectOption={handleFlowOptionSelect}
+                        onSubmitManualInput={handleManualFlowSubmit}
+                      />
+                    ) : m.emailDraft ? (
+                      <EmailDraftCard
+                        draft={m.emailDraft}
+                        onSaveDraft={handleSaveEmailDraft}
+                        onSendEmail={handleSendEmailDraft}
+                      />
+                    ) : (
+                      <MarkdownRenderer
+                        text={m.text || ""}
+                        onRequestRowClick={handleRequestRowClick}
+                      />
+                    )}
+                    {!m.emailDraft && renderArtifact(m)}
+                    {renderAttachments(m.attachments)}
+                  </div>
                 </div>
-              </div>
+              </React.Fragment>
             ))}
+
+            {normalizedMessages.length === 0 && shouldRenderFormAtEnd
+              ? renderFormMessageRow("inline-form-empty-end")
+              : null}
+
+            {normalizedMessages.length > 0 && shouldRenderFormAtEnd
+              ? renderFormMessageRow("inline-form-end")
+              : null}
           </>
         )}
 
@@ -1772,30 +2685,6 @@ const ChatWindow = ({
               <span className="dot" />
               <span className="dot" />
               <span className="dot" />
-            </div>
-          </div>
-        )}
-
-        {showForm && formDraft && (
-          <div className="msg-row bot">
-            <div className="msg-bubble">
-              <FormEditorCard
-                formDraft={formDraft}
-                setFormDraft={(updater) => {
-                  setFormDraft((prev) => {
-                    const next =
-                      typeof updater === "function" ? updater(prev) : updater;
-                    const sessionId = chatIdRef.current || chat?.id;
-                    if (sessionId) {
-                      onFormStateChange?.(sessionId, next);
-                    }
-                    return next;
-                  });
-                }}
-                onSave={handleSaveForm}
-                saving={savingForm}
-                saveMsg={formSaveMsg}
-              />
             </div>
           </div>
         )}

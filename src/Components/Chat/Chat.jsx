@@ -3,6 +3,7 @@ import Sidebar from "../Sidebar/Sidebar";
 import ChatWindow from "../ChatWindow/ChatWindow";
 import CustomerSidebar from "../RoleViews/CustomerSidebar";
 import SupplierSidebar from "../RoleViews/SupplierSidebar";
+import EngineerSidebar from "../RoleViews/EngineerSidebar";
 
 import { getUserProfile, getAccessToken } from "../../AWS/auth";
 import { CHAT_CONFIG } from "../../Config/ChatConfig";
@@ -153,10 +154,13 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
     localStorage.getItem("agentMode") === "true"
   );
 
-  const role = String(user?.profile || user?.role || "").toLowerCase();
+  const role = String(user?.profile || user?.role || "")
+    .toLowerCase()
+    .trim();
+  const isEngineer = role === "engineering";
   const isCustomer = role === "customer";
   const isSupplier = role === "supplier";
-  const isRoleBasedView = isCustomer || isSupplier;
+  const isRoleBasedView = isEngineer || isCustomer || isSupplier;
 
   const normalizeMessages = (rawMessages = []) =>
     rawMessages.map((m, i) => {
@@ -182,6 +186,20 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
         attachments,
       };
     });
+
+  const syncUserWithBackendProfile = (baseProfile, data) => {
+    const backendProfile = String(
+      data?.profile || baseProfile?.profile || baseProfile?.role || ""
+    )
+      .trim();
+
+    setUser((prev) => ({
+      ...(prev || {}),
+      ...(baseProfile || {}),
+      profile: backendProfile,
+      role: backendProfile,
+    }));
+  };
 
   const updateMessages = (sessionId, updater) => {
     setMessages((prev) => {
@@ -301,7 +319,9 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
         const title = String(s?.title || "").toLowerCase().trim();
         const sid = String(s?.sessionId || "").toLowerCase().trim();
 
-        return title.includes("customer request") || sid === "new customer request";
+        return (
+          title.includes("customer request") || sid === "new customer request"
+        );
       });
 
       return found?.sessionId || null;
@@ -416,6 +436,7 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
 
       const init = await initialiseChat(token, user.email, serverSessionId);
 
+      syncUserWithBackendProfile(user, init);
       setSessions(normalizeSessionsPayload(init));
       setFormForSession(serverSessionId, init?.formState || null);
 
@@ -498,6 +519,7 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
       const data = await initialiseChat(token, user.email, newId);
       const normalized = normalizeMessages(data.messages || []);
 
+      syncUserWithBackendProfile(user, data);
       setSessions(normalizeSessionsPayload(data));
       setMessages(normalized);
       setSessionMessagesMap((prev) => ({ ...prev, [newId]: normalized }));
@@ -517,14 +539,14 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
         const token = await getAccessToken();
         if (!profile || !token) return;
 
-        setUser(profile);
-
         const saved = loadSessionState();
         const requestedId = saved?.activeSessionId || null;
         const safeRequestedId =
           requestedId && requestedId.startsWith("temp-") ? null : requestedId;
 
         const data = await initialiseChat(token, profile.email, safeRequestedId);
+
+        syncUserWithBackendProfile(profile, data);
 
         const sid = data.activeSessionId || null;
         const normalized = normalizeMessages(data.messages || []);
@@ -538,6 +560,14 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
 
         if (sid) {
           setSessionMessagesMap((prev) => ({ ...prev, [sid]: normalized }));
+        }
+
+        if (Array.isArray(data?.allowedModes)) {
+          const canUseAgent = data.allowedModes.includes("agent");
+          setAgentMode((prev) => (canUseAgent ? prev : false));
+          if (!canUseAgent) {
+            localStorage.setItem("agentMode", "false");
+          }
         }
       } catch (err) {
         console.error("Initialise failed", err);
@@ -747,6 +777,7 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
       const data = await initialiseChat(token, user.email, sessionId);
       const normalized = normalizeMessages(data.messages || []);
 
+      syncUserWithBackendProfile(user, data);
       setSessions(normalizeSessionsPayload(data));
       setFormForSession(sessionId, data?.formState || null);
 
@@ -944,7 +975,23 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
       )}
 
       {isRoleBasedView ? (
-        isCustomer ? (
+        isEngineer ? (
+          <EngineerSidebar
+            requests={sessions?.requests || []}
+            groupedSessions={sessions?.groupedSessions || {}}
+            activeId={activeSessionId}
+            onSelectRequest={handleSessionClick}
+            user={user}
+            sidebarOpen={sidebarOpen}
+            setSidebarOpen={setSidebarOpen}
+            onCreate={handleCreateChatType}
+            theme={theme}
+            toggleTheme={toggleTheme}
+            onLogout={onLogout}
+            agentMode={agentMode}
+            onAgentModeChange={setAgentMode}
+          />
+        ) : isCustomer ? (
           <CustomerSidebar
             requests={sessions?.requests || []}
             groupedSessions={sessions?.groupedSessions || {}}
