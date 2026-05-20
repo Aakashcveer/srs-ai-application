@@ -184,14 +184,18 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
         text,
         content: m.content ?? text,
         attachments,
+        artifact: m.artifact || m.Artifact || null,
+        supplierTask: m.supplierTask || m.SupplierTask || null,
+        taskId: m.taskId || m.TaskId || "",
+        taskStatus: m.taskStatus || m.TaskStatus || "",
+        sessionType: m.sessionType || m.SessionType || "",
       };
     });
 
   const syncUserWithBackendProfile = (baseProfile, data) => {
     const backendProfile = String(
       data?.profile || baseProfile?.profile || baseProfile?.role || ""
-    )
-      .trim();
+    ).trim();
 
     setUser((prev) => ({
       ...(prev || {}),
@@ -292,38 +296,101 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
   const isCustomerRequestHelperMeta = (s) => {
     const title = String(s?.title || "").toLowerCase().trim();
     const sid = String(s?.sessionId || "").toLowerCase().trim();
-    const kcType = String(
-      s?.kcSessionType || s?.SessionType || s?.sessionType || ""
+    const sessionType = String(
+      s?.sessionType || s?.SessionType || s?.kcSessionType || ""
     )
       .toLowerCase()
       .trim();
 
     return (
-      title === "my assistant - new customer request" ||
-      sid === "new customer request" ||
-      sid === "customer request" ||
-      kcType === "customer request"
+      sessionType === "my assistant" &&
+      (sid === "new customer request" || title === "customer request")
     );
   };
 
+  const getCustomerRequestHelperSessionId = () => {
+    const assistantList = sessions?.groupedSessions?.myAssistant || [];
+    const helper = assistantList.find((s) => isCustomerRequestHelperMeta(s));
+    return helper?.sessionId || "New Customer Request";
+  };
+
   const isCustomerRequestHelperSessionId = (sessionId) => {
-    const sid = String(sessionId || "").toLowerCase().trim();
-    return sid === "new customer request" || sid === "customer request";
+    const sid = String(sessionId || "").trim().toLowerCase();
+    const helperSid = String(getCustomerRequestHelperSessionId() || "")
+      .trim()
+      .toLowerCase();
+
+    return sid === helperSid || sid === "new customer request";
+  };
+
+  const extractRequestIdFromSessionId = (sessionId) => {
+    const sid = String(sessionId || "").trim();
+    if (!sid) return "";
+
+    const parts = sid.split("#");
+    if (parts.length >= 3 && /^REQC$/i.test(parts[0])) {
+      return parts.slice(0, 3).join("#");
+    }
+    if (parts.length >= 3 && /^REQS$/i.test(parts[0])) {
+      return parts.slice(0, 3).join("#");
+    }
+    if (/^REQ-/i.test(parts[0])) {
+      return parts[0];
+    }
+    return parts[0] || sid;
+  };
+
+  const buildImmediateCustomerRequestRow = (sessionId, formState) => {
+    const customerPartName = String(formState?.CustomerPartName || "").trim();
+    const customerPartNumber = String(formState?.CustomerPartNumber || "").trim();
+    const customerName = String(formState?.CustomerName || "").trim();
+    const requestId =
+      String(formState?.RequestId || "").trim() ||
+      extractRequestIdFromSessionId(sessionId);
+
+    const nowIso = new Date().toISOString();
+
+    return {
+      sessionId,
+      title: customerPartName || requestId || sessionId,
+      createdAt: nowIso,
+      lastActivityAt: nowIso,
+      kcSessionType: "Customer Request",
+      sessionType: "Customer Request",
+      requestId,
+      requestStatus: "REQUEST-CREATE",
+      rawRequestStatus: "REQUEST-CREATE",
+      customerName,
+      customerPartName,
+      customerPartNumber,
+    };
+  };
+
+  const upsertBySessionId = (list = [], item) => {
+    const sid = String(item?.sessionId || "").trim();
+    if (!sid) return Array.isArray(list) ? list : [];
+
+    const arr = Array.isArray(list) ? [...list] : [];
+    const idx = arr.findIndex(
+      (x) => String(x?.sessionId || "").trim().toLowerCase() === sid.toLowerCase()
+    );
+
+    if (idx >= 0) {
+      arr[idx] = {
+        ...arr[idx],
+        ...item,
+      };
+      return arr;
+    }
+
+    return [item, ...arr];
   };
 
   const findExistingSessionIdForChatType = (chatType) => {
     const assistantList = sessions?.groupedSessions?.myAssistant || [];
 
     if (chatType === "NEW_CUSTOMER_REQUEST") {
-      const found = assistantList.find((s) => {
-        const title = String(s?.title || "").toLowerCase().trim();
-        const sid = String(s?.sessionId || "").toLowerCase().trim();
-
-        return (
-          title.includes("customer request") || sid === "new customer request"
-        );
-      });
-
+      const found = assistantList.find((s) => isCustomerRequestHelperMeta(s));
       return found?.sessionId || null;
     }
 
@@ -366,6 +433,8 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
 
     const oldId = activeSessionId;
     const oldFormState = formStateMap?.[oldId] || null;
+    const oldMessages = sessionMessagesMap?.[oldId] || [];
+    const oldIsHelper = isCustomerRequestHelperSessionId(oldId);
 
     const canAutoAdopt =
       oldId.startsWith("temp-") ||
@@ -383,8 +452,7 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
 
     setSessionMessagesMap((prev) => {
       const copy = { ...prev };
-      const oldMsgs = copy[oldId] || [];
-      copy[serverSessionId] = oldMsgs;
+      copy[serverSessionId] = copy[oldId] || [];
       delete copy[oldId];
       return copy;
     });
@@ -399,6 +467,26 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
     });
 
     setSessions((prev) => {
+      if (oldIsHelper) {
+        const immediateRow = buildImmediateCustomerRequestRow(
+          serverSessionId,
+          oldFormState || {}
+        );
+
+        return {
+          ...prev,
+          requests: upsertBySessionId(prev.requests || [], immediateRow),
+          groupedSessions: {
+            myAssistant: [...(prev.groupedSessions?.myAssistant || [])],
+            customerRequest: upsertBySessionId(
+              prev.groupedSessions?.customerRequest || [],
+              immediateRow
+            ),
+            supplierTask: [...(prev.groupedSessions?.supplierTask || [])],
+          },
+        };
+      }
+
       const tasks = (prev.tasks || []).map((s) =>
         s.sessionId === oldId ? { ...s, sessionId: serverSessionId } : s
       );
@@ -437,15 +525,63 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
       const init = await initialiseChat(token, user.email, serverSessionId);
 
       syncUserWithBackendProfile(user, init);
-      setSessions(normalizeSessionsPayload(init));
-      setFormForSession(serverSessionId, init?.formState || null);
+
+      const normalizedSessions = normalizeSessionsPayload(init);
+
+      setSessions((prev) => {
+        const backendCustomerRequest =
+          normalizedSessions?.groupedSessions?.customerRequest || [];
+
+        const hasServerSessionInSidebar = backendCustomerRequest.some(
+          (s) =>
+            String(s?.sessionId || "").trim().toLowerCase() ===
+            String(serverSessionId).trim().toLowerCase()
+        );
+
+        if (!hasServerSessionInSidebar && oldIsHelper) {
+          const immediateRow = buildImmediateCustomerRequestRow(
+            serverSessionId,
+            oldFormState || {}
+          );
+
+          return {
+            ...normalizedSessions,
+            requests: upsertBySessionId(normalizedSessions.requests || [], immediateRow),
+            groupedSessions: {
+              myAssistant: normalizedSessions.groupedSessions?.myAssistant || [],
+              customerRequest: upsertBySessionId(
+                normalizedSessions.groupedSessions?.customerRequest || [],
+                immediateRow
+              ),
+              supplierTask: normalizedSessions.groupedSessions?.supplierTask || [],
+            },
+          };
+        }
+
+        return normalizedSessions;
+      });
+
+      if (isCustomerRequestHelperSessionId(serverSessionId)) {
+        setFormForSession(serverSessionId, null);
+        setMessages([]);
+        setSessionMessagesMap((prev) => ({
+          ...prev,
+          [serverSessionId]: [],
+        }));
+        return;
+      }
+
+      const nextFormState = init?.formState || oldFormState || null;
+      setFormForSession(serverSessionId, nextFormState);
 
       if (init?.messages) {
         const normalized = normalizeMessages(init.messages || []);
-        setMessages(normalized);
+        const finalMessages = normalized.length ? normalized : oldMessages;
+
+        setMessages(finalMessages);
         setSessionMessagesMap((prev) => ({
           ...prev,
-          [serverSessionId]: normalized,
+          [serverSessionId]: finalMessages,
         }));
       }
     } catch (e) {
@@ -461,30 +597,51 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
     setFormForSession(tempId, null);
   };
 
-  const openCustomerRequestStarter = () => {
-    const starterId = "new customer request";
+  const openCustomerRequestStarter = async (targetSessionId = null) => {
+    try {
+      const starterId = targetSessionId || getCustomerRequestHelperSessionId();
 
-    setActiveSessionId(starterId);
-    setMessages(sessionMessagesMap[starterId] || []);
-    setFormForSession(starterId, null);
+      setActiveSessionId(starterId);
+      setMessages([]);
+      setFormForSession(starterId, null);
 
-    setSessionMessagesMap((prev) => ({
-      ...prev,
-      [starterId]: prev[starterId] || [],
-    }));
+      setSessionMessagesMap((prev) => ({
+        ...prev,
+        [starterId]: [],
+      }));
 
-    const prevState = loadSessionState();
-    saveSessionState({
-      activeSessionId: starterId,
-      lastActivityAt: Date.now(),
-      sessionStartedAt: prevState?.sessionStartedAt || Date.now(),
-    });
+      const prevState = loadSessionState();
+      saveSessionState({
+        activeSessionId: starterId,
+        lastActivityAt: Date.now(),
+        sessionStartedAt: prevState?.sessionStartedAt || Date.now(),
+      });
+
+      if (!user?.email) return;
+
+      const token = await getAccessToken();
+      if (!token) return;
+
+      const data = await initialiseChat(token, user.email, starterId);
+
+      syncUserWithBackendProfile(user, data);
+      setSessions(normalizeSessionsPayload(data));
+
+      setMessages([]);
+      setFormForSession(starterId, null);
+      setSessionMessagesMap((prev) => ({
+        ...prev,
+        [starterId]: [],
+      }));
+    } catch (e) {
+      console.error("Failed to open customer request starter", e);
+    }
   };
 
   const handleCreateChatType = async (chatType) => {
     try {
       if (chatType === "NEW_CUSTOMER_REQUEST") {
-        openCustomerRequestStarter();
+        await openCustomerRequestStarter();
         return;
       }
 
@@ -553,13 +710,20 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
 
         setSessions(normalizeSessionsPayload(data));
 
-        if (sid) setFormForSession(sid, data?.formState || null);
+        if (sid && isCustomerRequestHelperSessionId(sid)) {
+          setActiveSessionId(sid);
+          setMessages([]);
+          setFormForSession(sid, null);
+          setSessionMessagesMap((prev) => ({ ...prev, [sid]: [] }));
+        } else {
+          if (sid) setFormForSession(sid, data?.formState || null);
 
-        setActiveSessionId(sid);
-        setMessages(normalized);
+          setActiveSessionId(sid);
+          setMessages(normalized);
 
-        if (sid) {
-          setSessionMessagesMap((prev) => ({ ...prev, [sid]: normalized }));
+          if (sid) {
+            setSessionMessagesMap((prev) => ({ ...prev, [sid]: normalized }));
+          }
         }
 
         if (Array.isArray(data?.allowedModes)) {
@@ -749,10 +913,120 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
     ];
   };
 
+  const isSupplierTaskMeta = (meta) => {
+    const sid = String(meta?.sessionId || meta?.taskId || "").toUpperCase();
+    const sessionType = String(
+      meta?.sessionType || meta?.kcSessionType || meta?.taskType || ""
+    )
+      .toLowerCase()
+      .trim();
+
+    return (
+      sid.startsWith("TSKS") ||
+      sid.startsWith("TSKE") ||
+      sessionType === "supplier task" ||
+      sessionType === "supplier request"
+    );
+  };
+
+  const buildSupplierTaskFallbackMessages = (sessionId, meta = null) => {
+    const taskMeta =
+      meta ||
+      [
+        ...(sessions?.tasks || []),
+        ...(sessions?.groupedSessions?.supplierTask || []),
+      ].find((s) => String(s?.sessionId || s?.taskId || "") === String(sessionId));
+
+    if (!taskMeta) return [];
+
+    const taskId = taskMeta?.taskId || taskMeta?.sessionId || sessionId || "-";
+    const taskName =
+      taskMeta?.taskName ||
+      taskMeta?.title ||
+      taskMeta?.displaySessionId ||
+      "Supplier Request";
+    const taskStatus = taskMeta?.taskStatus || taskMeta?.status || "CREATE";
+    const taskPriority = taskMeta?.taskPriority || taskMeta?.priority || "MEDIUM";
+    const taskType = taskMeta?.taskType || "Supplier Request";
+    const requestId = taskMeta?.requestId || taskMeta?.taskAssignedBy || "-";
+    const assignedFor =
+      taskMeta?.taskAssignedFor ||
+      taskMeta?.customerPart ||
+      [taskMeta?.customerName, taskMeta?.customerPartNumber, taskMeta?.customerPartName]
+        .filter(Boolean)
+        .join("#") ||
+      "-";
+    const uploadUrl = taskMeta?.supplierPortalUrl || "http://localhost:5173";
+    const description = taskMeta?.taskDescription || "-";
+
+    const missingRaw = taskMeta?.missingInformation || [];
+    const missingList = Array.isArray(missingRaw)
+      ? missingRaw
+      : missingRaw
+      ? [missingRaw]
+      : ["Full Material Disclosure document"];
+
+    const missingText = missingList
+      .filter(Boolean)
+      .map((x) => `- ${String(x)}`)
+      .join("\n");
+
+    const text =
+      `✅ **Supplier Task Loaded**\n\n` +
+      `**Task:** ${taskName}\n` +
+      `**Task ID:** ${taskId}\n` +
+      `**Task Type:** ${taskType}\n` +
+      `**Status:** ${taskStatus}\n` +
+      `**Priority:** ${taskPriority}\n` +
+      `**Assigned By Request:** ${requestId}\n` +
+      `**Customer / Part:** ${assignedFor}\n\n` +
+      `**Requested Information:**\n${missingText}\n\n` +
+      `**Description:** ${description}\n\n` +
+      `**Upload URL:** ${uploadUrl}\n\n` +
+      `Please upload the requested document/information, then submit the task for engineering review.`;
+
+    return [
+      {
+        id: `supplier-task-${taskId}`,
+        sender: "bot",
+        role: "assistant",
+        text,
+        content: text,
+        attachments: [],
+        artifact: {
+          type: "supplier_task",
+          taskId,
+          taskItem: taskMeta,
+          taskName,
+          taskStatus,
+          taskPriority,
+          taskType,
+          requestId,
+          assignedFor,
+          supplierPortalUrl: uploadUrl,
+          missingInformation: missingList,
+        },
+        supplierTask: {
+          type: "supplier_task",
+          taskId,
+          taskItem: taskMeta,
+          taskName,
+          taskStatus,
+          taskPriority,
+          taskType,
+          requestId,
+          assignedFor,
+          supplierPortalUrl: uploadUrl,
+          missingInformation: missingList,
+        },
+      },
+    ];
+  };
+
   const handleSessionClick = async (sessionId) => {
     try {
       if (isCustomerRequestHelperSessionId(sessionId)) {
-        openCustomerRequestStarter();
+        await openCustomerRequestStarter(sessionId);
         return;
       }
 
@@ -774,12 +1048,34 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
         ...(sessions?.groupedSessions?.supplierTask || []),
       ].find((r) => r.sessionId === sessionId);
 
+      const existingFormState = formStateMap?.[sessionId] || null;
+
+      if (selectedRequestMeta && isSupplierTaskMeta(selectedRequestMeta)) {
+        const supplierFallback = buildSupplierTaskFallbackMessages(
+          sessionId,
+          selectedRequestMeta
+        );
+
+        if (supplierFallback.length) {
+          setMessages(supplierFallback);
+          setSessionMessagesMap((prev) => ({
+            ...prev,
+            [sessionId]: supplierFallback,
+          }));
+        }
+      }
+
       const data = await initialiseChat(token, user.email, sessionId);
       const normalized = normalizeMessages(data.messages || []);
 
       syncUserWithBackendProfile(user, data);
       setSessions(normalizeSessionsPayload(data));
-      setFormForSession(sessionId, data?.formState || null);
+
+      const existingFormStateForSession = formStateMap?.[sessionId] || null;
+      setFormForSession(
+        sessionId,
+        data?.formState || existingFormStateForSession || null
+      );
 
       if (
         !normalized.length &&
@@ -795,10 +1091,22 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
         return;
       }
 
-      setMessages(normalized);
+      const supplierFallback =
+        selectedRequestMeta && isSupplierTaskMeta(selectedRequestMeta)
+          ? buildSupplierTaskFallbackMessages(sessionId, selectedRequestMeta)
+          : [];
+
+      const finalMessages =
+        normalized.length > 0
+          ? normalized
+          : supplierFallback.length > 0
+          ? supplierFallback
+          : sessionMessagesMap[sessionId] || [];
+
+      setMessages(finalMessages);
       setSessionMessagesMap((prev) => ({
         ...prev,
-        [sessionId]: normalized,
+        [sessionId]: finalMessages,
       }));
     } catch (err) {
       console.error("Failed to load history", err);
@@ -908,18 +1216,12 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
 
   const activeFormState = activeSessionId ? formStateMap[activeSessionId] : null;
 
-  const customerRequestHelperSessionId =
-    findExistingSessionIdForChatType("NEW_CUSTOMER_REQUEST");
-
-  const isDirectCustomerRequestHelperSession =
-    String(activeSessionId || "").toLowerCase().trim() === "new customer request" ||
-    String(activeSessionId || "").toLowerCase().trim() === "customer request";
+  const customerRequestHelperSessionId = getCustomerRequestHelperSessionId();
 
   const isCustomerRequestStarterSession =
     !!activeSessionId &&
-    (isDirectCustomerRequestHelperSession ||
-      (!!customerRequestHelperSessionId &&
-        String(activeSessionId) === String(customerRequestHelperSessionId)));
+    String(activeSessionId || "").toLowerCase().trim() ===
+      String(customerRequestHelperSessionId || "").toLowerCase().trim();
 
   const customerRequestSuggestions = (
     sessions?.groupedSessions?.customerRequest ||

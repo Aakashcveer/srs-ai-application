@@ -11,6 +11,7 @@ import { FolderOpen, PlusCircle, ChevronDown } from "lucide-react";
 import "./ChatWindow.css";
 import { UploadIcon, SendIcon } from "./InputIcons";
 import MarkdownRenderer from "./MarkdownRenderer";
+import WorkflowFulfillmentBar from "./WorkflowFulfillmentBar";
 import {
   sendChatMessage,
   uploadFilePresigned,
@@ -19,12 +20,317 @@ import {
   saveGeneratedForm,
   searchCustomerRequests,
   sendCustomerEmail,
+  processCustomerReply,
+  buildRequestConfirmationEmailMarkdown,
 } from "../../api/api-config";
 import { getAccessToken } from "../../AWS/auth";
 
 /* ===============================
+   ✅ Constants
+   =============================== */
+const CUSTOMER_REQUEST_FROM_EMAIL =
+  "sustainability@assureai.onmicrosoft.com";
+
+// Keep all customer-request email subjects locked to the active sidebar session.
+// Example sessionId:
+// REQC#20260506#193347-37928ad1#BMW-CAL-R1#Brake Caliper-Rear
+// requestId becomes:
+// REQC#20260506#193347-37928ad1
+const extractRequestIdFromSessionId = (sessionId = "") => {
+  const value = String(sessionId || "").trim();
+  if (!value) return "";
+
+  const parts = value.split("#");
+  if (parts.length >= 3 && /^REQ[A-Z]?$/i.test(parts[0])) {
+    return `${parts[0]}#${parts[1]}#${parts[2]}`;
+  }
+
+  return value;
+};
+
+const extractPartNumberFromSessionId = (sessionId = "") => {
+  const parts = String(sessionId || "").split("#");
+  return parts.length >= 4 ? parts[3] || "" : "";
+};
+
+const extractPartNameFromSessionId = (sessionId = "") => {
+  const parts = String(sessionId || "").split("#");
+  return parts.length >= 5 ? parts.slice(4).join("#") || "" : "";
+};
+
+const buildLockedCustomerEmailSubject = (sessionId = "", draft = {}) => {
+  const requestId = extractRequestIdFromSessionId(sessionId);
+  const partName =
+    draft?.CustomerPartName ||
+    draft?.customerPartName ||
+    extractPartNameFromSessionId(sessionId) ||
+    "Customer Request";
+  const partNumber =
+    draft?.CustomerPartNumber ||
+    draft?.customerPartNumber ||
+    extractPartNumberFromSessionId(sessionId) ||
+    "";
+
+  if (!requestId) return String(draft?.subject || draft?.Subject || "Customer Request Update");
+
+  return `Customer Request - ${requestId} - ${partName}${partNumber ? ` | ${partNumber}` : ""}`;
+};
+
+const lockEmailDraftToSession = (draft = null, sessionId = "", formDraft = {}) => {
+  if (!draft) return draft;
+  const lockedSubject = buildLockedCustomerEmailSubject(sessionId, formDraft);
+  return {
+    ...draft,
+    subject: lockedSubject,
+    Subject: lockedSubject,
+  };
+};
+
+const lockArtifactToSession = (artifact = null, sessionId = "", formDraft = {}) => {
+  if (!artifact) return artifact;
+  const lockedSubject = buildLockedCustomerEmailSubject(sessionId, formDraft);
+
+  if (artifact?.type === "email_draft" || artifact?.subject || artifact?.Subject) {
+    return {
+      ...artifact,
+      subject: lockedSubject,
+      Subject: lockedSubject,
+    };
+  }
+
+  return artifact;
+};
+
+const lockReplyTextSubjectToSession = (text = "", sessionId = "", formDraft = {}) => {
+  const value = String(text || "");
+  if (!value) return value;
+
+  const lockedSubject = buildLockedCustomerEmailSubject(sessionId, formDraft);
+
+  if (/^Subject\s*:/i.test(value.trim())) {
+    return value.replace(/^Subject\s*:.*/i, `Subject: ${lockedSubject}`);
+  }
+
+  return value;
+};
+
+// Compact customer email body for Gmail/Outlook.
+// This avoids the large markdown spacing that Gmail was showing in received mails.
+const buildCompactCustomerEmailBody = ({
+  requestId = "",
+  customerName = "",
+  customerPart = "",
+  requestName = "Customer Request",
+  requestType = "",
+  requestDescription = "",
+  requestPriority = "Medium",
+  requestCompletionDateTime = "",
+  engineeringContactEmailId = "",
+} = {}) => {
+  const clean = (value) => String(value ?? "").trim();
+  const safeCustomer = clean(customerName) || "Customer";
+  const safeRequestType = clean(requestType) || "Customer Request";
+  const safeRequestName = clean(requestName) || "Customer Request";
+  const safeDescription = clean(requestDescription);
+
+  return [
+    `Dear ${safeCustomer} Team,`,
+    "",
+    `This email confirms that we have received and logged your request for ${safeRequestType}.`,
+    "",
+    "Request Information:",
+    `- Request ID: ${clean(requestId)}`,
+    `- Request Name: ${safeRequestName}`,
+    `- Current Status: REQUEST-REVIEW`,
+    `- Priority: ${clean(requestPriority) || "Medium"}`,
+    "",
+    "Part & Project Details:",
+    `- Customer: ${safeCustomer}`,
+    `- Part Description: ${clean(customerPart)}`,
+    safeDescription ? `- Objective: ${safeDescription}` : "- Objective: Not provided",
+    "",
+    "Timeline & Contact:",
+    `- Estimated Completion: ${clean(requestCompletionDateTime) || "Not provided"}`,
+    `- Engineering Lead: ${clean(engineeringContactEmailId)}`,
+    "",
+    "Next Steps:",
+    "Our team is currently in the REQUEST-REVIEW phase. We will reach out if any further clarification or documentation is required.",
+    "",
+    "Best regards,",
+    "Engineering Operations Team",
+  ]
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+};
+
+
+/* ===============================
    ✅ Common message helpers
    =============================== */
+
+const WORKFLOW_STATUS_ORDER = [
+  "REQUEST-CREATE",
+  "REQUEST-REVIEW",
+  "REQUEST-CONFIRMED",
+  "ASSESSMENT-TRIGGERED",
+  "ASSESSMENT-INPROGRESS",
+  "ASSESSMENT-COMPLETED",
+  "RESULTS-REVIEW",
+  "RESULTS-APPROVED",
+  "RESULTS-SUBMITTED",
+  "REQUEST-CLOSED",
+];
+
+const escapeRegex = (value = "") =>
+  String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const normalizeWorkflowStatus = (status = "") => {
+  const value = String(status || "")
+    .trim()
+    .toUpperCase()
+    .replace(/_/g, "-")
+    .replace(/\s+/g, "-");
+
+  if (value === "ASSESSMENT-IN-PROGRESS") return "ASSESSMENT-INPROGRESS";
+  if (value === "REQUEST-CREATED") return "REQUEST-CREATE";
+  if (value === "REQUEST-REVIEWED") return "REQUEST-REVIEW";
+  if (value === "REQUEST-SUBMITTED") return "RESULTS-SUBMITTED";
+
+  return WORKFLOW_STATUS_ORDER.includes(value) ? value : "";
+};
+
+const extractWorkflowStatusFromText = (text = "") => {
+  const value = String(text || "").toUpperCase();
+  if (!value) return "";
+
+  const explicitPatterns = [
+    /REQUEST\s*STATUS\s*[:=-]\s*([A-Z][A-Z\s_-]+)/i,
+    /CURRENT\s+STATUS\s*[:=-]\s*([A-Z][A-Z\s_-]+)/i,
+    /WORKFLOW\s*STATE\s*[:=-]\s*([A-Z][A-Z\s_-]+)/i,
+    /STATUS\s*[:=-]\s*([A-Z][A-Z\s_-]+)/i,
+  ];
+
+  for (const pattern of explicitPatterns) {
+    const match = value.match(pattern);
+    if (match?.[1]) {
+      const cleaned = match[1]
+        .split(/[\n,|]/)[0]
+        .replace(/[^A-Z0-9_-]+$/g, "")
+        .trim();
+      const normalized = normalizeWorkflowStatus(cleaned);
+      if (normalized) return normalized;
+    }
+  }
+
+  for (let i = WORKFLOW_STATUS_ORDER.length - 1; i >= 0; i -= 1) {
+    const status = WORKFLOW_STATUS_ORDER[i];
+    const re = new RegExp(`\\b${escapeRegex(status)}\\b`, "i");
+    if (re.test(value)) return status;
+  }
+
+  return "";
+};
+
+const extractWorkflowStatusFromMessage = (message = {}) => {
+  const directStatus = normalizeWorkflowStatus(
+    message?.RequestStatus ||
+      message?.requestStatus ||
+      message?.workflowState ||
+      message?.WorkflowState ||
+      message?.artifact?.RequestStatus ||
+      message?.artifact?.requestStatus ||
+      message?.artifact?.workflowState ||
+      message?.artifact?.WorkflowState ||
+      ""
+  );
+
+  if (directStatus) return directStatus;
+
+  const text = [
+    extractMessageText(message),
+    message?.text,
+    typeof message?.content === "string" ? message.content : "",
+    message?.artifact ? JSON.stringify(message.artifact) : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return extractWorkflowStatusFromText(text);
+};
+
+const extractCurrentRequestStatusFromMessages = (messages = []) => {
+  const list = Array.isArray(messages) ? messages : [];
+
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    const status = extractWorkflowStatusFromMessage(list[i]);
+    if (status) return status;
+  }
+
+  return "";
+};
+
+const hasSupplierPendingAssessmentSignal = (messages = []) => {
+  const list = Array.isArray(messages) ? messages : [];
+
+  return list.some((m) => {
+    const text = [
+      extractMessageText(m),
+      m?.text,
+      typeof m?.content === "string" ? m.content : "",
+      m?.artifact ? JSON.stringify(m.artifact) : "",
+      m?.emailDraft ? JSON.stringify(m.emailDraft) : "",
+    ]
+      .filter(Boolean)
+      .join("\n")
+      .toLowerCase();
+
+    return (
+      text.includes("supplier task created") ||
+      text.includes("supplier email draft") ||
+      text.includes("supplier_fmd_request") ||
+      text.includes("request fmd documents from supplier") ||
+      text.includes("url to upload documents") ||
+      text.includes("full material disclosure")
+    );
+  });
+};
+
+const isSupplierTaskSessionId = (sessionId = "") => {
+  const value = String(sessionId || "").trim().toUpperCase();
+  return value.startsWith("TSKS") || value.startsWith("TSKE");
+};
+
+const hasLoadedSupplierTaskMessage = (messages = []) => {
+  const list = Array.isArray(messages) ? messages : [];
+
+  return list.some((m) => {
+    const artifactType = String(
+      m?.artifact?.type ||
+        m?.supplierTask?.type ||
+        ""
+    )
+      .toLowerCase()
+      .trim();
+
+    const text = [
+      extractMessageText(m),
+      m?.text,
+      typeof m?.content === "string" ? m.content : "",
+    ]
+      .filter(Boolean)
+      .join("\n")
+      .toLowerCase();
+
+    return (
+      artifactType === "supplier_task" ||
+      text.includes("supplier task loaded") ||
+      text.includes("upload requested fmd information") ||
+      text.includes("please upload the requested document/information")
+    );
+  });
+};
+
 const extractMessageText = (m = {}) => {
   return (
     m?.text ??
@@ -52,7 +358,9 @@ const isReviewPromptMessage = (text = "") => {
   const value = String(text || "").trim().toLowerCase();
   return (
     value.includes("customer request submitted for review successfully") ||
-    value.includes("would you like me to generate a professional customer email draft")
+    value.includes(
+      "would you like me to generate a professional customer email draft"
+    )
   );
 };
 
@@ -64,6 +372,64 @@ const isSystemFlowMarkerText = (text = "") => {
     value === "FORM_SUBMITTED SUBMITTED_FOR_REVIEW" ||
     (value.includes("FORM_SUBMITTED") && value.includes("SUBMITTED_FOR_REVIEW"))
   );
+};
+
+const isCustomerFlowQuestionText = (text = "") => {
+  const value = String(text || "").trim().toLowerCase();
+  return [
+    "select customer name",
+    "enter customer name",
+    "select customer part name",
+    "enter customer part name",
+    "select customer part number",
+    "enter customer part number",
+    "select customer part name and number",
+  ].includes(value);
+};
+
+const guessCustomerFlowStepFromQuestion = (question = "") => {
+  const value = String(question || "").trim().toLowerCase();
+
+  if (value === "select customer name") return "customer_name";
+  if (value === "enter customer name") return "customer_name_manual";
+  if (value === "select customer part name") return "customer_part_name";
+  if (value === "enter customer part name") return "customer_part_name_manual";
+  if (value === "select customer part number") return "customer_part_number";
+  if (value === "enter customer part number")
+    return "customer_part_number_manual";
+  if (value === "select customer part name and number")
+    return "customer_part_name";
+
+  return "";
+};
+
+const buildCustomerFlowMessageFromResponse = (res = {}) => {
+  const reply = String(res?.reply || "").trim();
+  const question = String(res?.question || reply || "").trim();
+  const options = Array.isArray(res?.options) ? res.options : [];
+  const inputType = res?.inputType || null;
+  const step = String(res?.step || guessCustomerFlowStepFromQuestion(question));
+
+  const looksLikeFlow =
+    res?.flowType === "customer_request" ||
+    !!res?.question ||
+    !!res?.step ||
+    !!res?.inputType ||
+    options.length > 0 ||
+    isCustomerFlowQuestionText(reply);
+
+  if (!looksLikeFlow) return null;
+
+  return {
+    sender: "bot",
+    role: "assistant",
+    text: reply || question,
+    flowType: "customer_request",
+    step,
+    question: question || reply,
+    options,
+    inputType,
+  };
 };
 
 const getPersistedFormInsertIndex = (messages = []) => {
@@ -99,6 +465,61 @@ const getPersistedFormInsertIndex = (messages = []) => {
   }
 
   return messages.length;
+};
+
+const normalizeFlowOptions = (options = []) =>
+  (Array.isArray(options) ? options : []).map((x) => String(x || "").trim());
+
+const areFlowOptionsEqual = (a = [], b = []) => {
+  const aa = normalizeFlowOptions(a);
+  const bb = normalizeFlowOptions(b);
+  if (aa.length !== bb.length) return false;
+  return aa.every((item, idx) => item === bb[idx]);
+};
+
+const isSameCustomerFlowCard = (a = {}, b = {}) => {
+  if (a?.flowType !== "customer_request" || b?.flowType !== "customer_request") {
+    return false;
+  }
+
+  return (
+    String(a?.step || "").trim() === String(b?.step || "").trim() &&
+    String(a?.question || "").trim() === String(b?.question || "").trim() &&
+    String(a?.inputType || "").trim() === String(b?.inputType || "").trim() &&
+    areFlowOptionsEqual(a?.options || [], b?.options || [])
+  );
+};
+
+const mergeUniqueRequestSuggestions = (...lists) => {
+  const merged = [];
+  const seenSessionIds = new Set();
+  const seenRequestIds = new Set();
+
+  for (const list of lists) {
+    for (const item of Array.isArray(list) ? list : []) {
+      if (!item || typeof item !== "object") continue;
+
+      const sessionId = String(
+        item?.sessionId || item?.SessionId || ""
+      ).trim();
+      const requestId = String(
+        item?.requestId || item?.RequestId || ""
+      ).trim();
+
+      const sessionKey = sessionId.toLowerCase();
+      const requestKey = requestId.toLowerCase();
+
+      if (sessionKey && seenSessionIds.has(sessionKey)) continue;
+      if (requestKey && seenRequestIds.has(requestKey)) continue;
+
+      if (sessionKey) seenSessionIds.add(sessionKey);
+      if (requestKey) seenRequestIds.add(requestKey);
+
+      merged.push(item);
+    }
+  }
+
+  return merged;
 };
 
 /* ===============================
@@ -167,6 +588,630 @@ const DocTypePopover = ({ anchorRef, fileName, onSelect, onSkip }) => {
 };
 
 /* ===============================
+   ✅ Process Customer Reply Modal
+   =============================== */
+const CustomerReplyModal = ({
+  open,
+  subject,
+  body,
+  setSubject,
+  setBody,
+  onClose,
+  onSubmit,
+  loading,
+}) => {
+  if (!open) return null;
+
+  return createPortal(
+    <>
+      <div
+        style={{
+          position: "fixed",
+          inset: 0,
+          background: "rgba(15, 23, 42, 0.38)",
+          zIndex: 9998,
+        }}
+        onClick={onClose}
+      />
+
+      <div
+        style={{
+          position: "fixed",
+          top: "50%",
+          left: "50%",
+          transform: "translate(-50%, -50%)",
+          width: "min(680px, calc(100vw - 24px))",
+          background: "#fff",
+          borderRadius: "18px",
+          boxShadow: "0 30px 80px rgba(15, 23, 42, 0.22)",
+          padding: "22px",
+          zIndex: 9999,
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div
+          style={{
+            fontSize: "12px",
+            fontWeight: 700,
+            color: "#6b7a90",
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+            marginBottom: "8px",
+          }}
+        >
+          Customer Reply
+        </div>
+
+        <div
+          style={{
+            fontSize: "22px",
+            fontWeight: 700,
+            color: "#1f2b3d",
+            marginBottom: "8px",
+          }}
+        >
+          Process customer response
+        </div>
+
+        <div
+          style={{
+            fontSize: "14px",
+            color: "#6b7280",
+            marginBottom: "18px",
+            lineHeight: 1.5,
+          }}
+        >
+          Paste the customer email reply here. Backend will classify it and move
+          status to <strong>REQUEST-CONFIRMED</strong> if confirmed.
+        </div>
+
+        <div style={{ marginBottom: "14px" }}>
+          <label
+            style={{
+              display: "block",
+              fontSize: "13px",
+              fontWeight: 600,
+              color: "#24324a",
+              marginBottom: "8px",
+            }}
+          >
+            Email Subject
+          </label>
+          <input
+            value={subject}
+            onChange={(e) => setSubject(e.target.value)}
+            placeholder="Ex: Re: Customer Request Submitted for Review"
+            style={{
+              width: "100%",
+              height: "44px",
+              borderRadius: "12px",
+              border: "1px solid #dbe3f0",
+              padding: "0 14px",
+              fontSize: "14px",
+              outline: "none",
+            }}
+          />
+        </div>
+
+        <div style={{ marginBottom: "18px" }}>
+          <label
+            style={{
+              display: "block",
+              fontSize: "13px",
+              fontWeight: 600,
+              color: "#24324a",
+              marginBottom: "8px",
+            }}
+          >
+            Email Body
+          </label>
+          <textarea
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            placeholder="Ex: Okay looks good, proceed."
+            rows={8}
+            style={{
+              width: "100%",
+              borderRadius: "12px",
+              border: "1px solid #dbe3f0",
+              padding: "12px 14px",
+              fontSize: "14px",
+              outline: "none",
+              resize: "vertical",
+            }}
+          />
+        </div>
+
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "flex-end",
+            gap: "10px",
+          }}
+        >
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={loading}
+            className="premiumGhostBtn"
+          >
+            Cancel
+          </button>
+
+          <button
+            type="button"
+            onClick={onSubmit}
+            disabled={loading || (!subject.trim() && !body.trim())}
+            className="formSaveBtn premiumFormSaveBtn"
+          >
+            {loading ? "Processing..." : "Process Reply"}
+          </button>
+        </div>
+      </div>
+    </>,
+    document.body
+  );
+};
+
+/* ===============================
+   ✅ Process Customer Reply Card
+   =============================== */
+const CustomerReplyActionCard = ({ onOpen }) => {
+  return (
+    <div className="emailDraftShell">
+      <div className="emailDraftHeader">
+        <div>
+          <div className="emailDraftEyebrow">Customer Reply</div>
+          <div className="emailDraftTitle">Update request from customer email</div>
+        </div>
+      </div>
+
+      <div
+        className="emailDraftFooter"
+        style={{ paddingTop: "8px", borderTop: "none" }}
+      >
+        <div className="emailDraftFooterHint">
+          Paste the customer response and classify it to move the request to
+          REQUEST-CONFIRMED when applicable.
+        </div>
+
+        <div className="emailDraftFooterActions">
+          <button
+            type="button"
+            className="formSaveBtn premiumFormSaveBtn"
+            onClick={onOpen}
+          >
+            Process Customer Reply
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+
+/* ===============================
+   ✅ Automatic EMAIL REVIEW Action Card
+   =============================== */
+const extractCustomerEmailReplyFromMessages = (messages = []) => {
+  const list = Array.isArray(messages) ? messages : [];
+
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    const msg = list[i] || {};
+    const text = String(extractMessageText(msg) || msg?.text || "").trim();
+    const lower = text.toLowerCase();
+    const artifact = msg?.artifact || {};
+
+    if (
+      artifact?.type === "email_review_task" ||
+      artifact?.AskType === "EMAIL REVIEW" ||
+      msg?.AskType === "EMAIL REVIEW" ||
+      lower.includes("customer_email_reply") ||
+      lower.includes("customer email reply received") ||
+      lower.includes("status moved to email-review")
+    ) {
+      const subjectFromText =
+        text.match(/Subject:\s*([^\n]+)/i)?.[1]?.trim() ||
+        artifact?.replySubject ||
+        artifact?.CustomerReplySubject ||
+        msg?.CustomerReplySubject ||
+        "Customer email reply";
+
+      const fromFromText =
+        text.match(/From:\s*([^\n]+)/i)?.[1]?.trim() ||
+        artifact?.replyFrom ||
+        artifact?.CustomerReplyFrom ||
+        msg?.CustomerReplyFrom ||
+        "";
+
+      const requestIdFromText =
+        text.match(/REQ[A-Z]?#\d{8}#\d{6}-[A-Za-z0-9]+/i)?.[0] ||
+        artifact?.requestId ||
+        artifact?.RequestId ||
+        msg?.requestId ||
+        msg?.RequestId ||
+        "";
+
+      let body =
+        artifact?.replyBody ||
+        artifact?.CustomerReplyBody ||
+        msg?.CustomerReplyBody ||
+        "";
+
+      if (!body && lower.includes("customer_email_reply")) {
+        body = text
+          .replace(/CUSTOMER_EMAIL_REPLY/i, "")
+          .replace(/From:\s*[^\n]+/i, "")
+          .replace(/Subject:\s*[^\n]+/i, "")
+          .trim();
+      }
+
+      return {
+        askType: artifact?.AskType || msg?.AskType || "EMAIL REVIEW",
+        status: artifact?.RequestStatus || msg?.RequestStatus || "EMAIL-REVIEW",
+        assignedTo:
+          artifact?.AssignedTo ||
+          artifact?.assignedTo ||
+          artifact?.EngineeringContactEmailId ||
+          msg?.AssignedTo ||
+          msg?.assignedTo ||
+          msg?.EngineeringContactEmailId ||
+          "",
+        requestId: requestIdFromText,
+        subject: subjectFromText,
+        from: fromFromText,
+        body: String(body || "").trim(),
+      };
+    }
+  }
+
+  return {
+    askType: "EMAIL REVIEW",
+    status: "EMAIL-REVIEW",
+    assignedTo: "",
+    requestId: "",
+    subject: "",
+    from: "",
+    body: "",
+  };
+};
+
+const hasEmailReviewSignal = (messages = []) => {
+  return (Array.isArray(messages) ? messages : []).some((m) => {
+    const text = String(extractMessageText(m) || m?.text || "").toLowerCase();
+    const artifact = m?.artifact || {};
+    return (
+      artifact?.type === "email_review_task" ||
+      artifact?.AskType === "EMAIL REVIEW" ||
+      m?.AskType === "EMAIL REVIEW" ||
+      text.includes("email-review") ||
+      text.includes("email review") ||
+      text.includes("customer_email_reply") ||
+      text.includes("customer email reply received")
+    );
+  });
+};
+
+
+const getEmailReviewRequestIdFromMessage = (m = {}) => {
+  const artifact = m?.artifact || {};
+  const text = String(extractMessageText(m) || m?.text || "");
+
+  return String(
+    artifact?.requestId ||
+      artifact?.RequestId ||
+      m?.requestId ||
+      m?.RequestId ||
+      text.match(/REQ[A-Z]?#\d{8}#\d{6}-[A-Za-z0-9]+/i)?.[0] ||
+      ""
+  ).trim();
+};
+
+const getEmailReviewDedupeKey = (m = {}) => {
+  const artifact = m?.artifact || {};
+  const text = String(extractMessageText(m) || m?.text || "").trim();
+  const lower = text.toLowerCase();
+
+  const looksLikeEmailReview =
+    artifact?.type === "email_review_task" ||
+    artifact?.AskType === "EMAIL REVIEW" ||
+    m?.AskType === "EMAIL REVIEW" ||
+    lower.includes("customer_email_reply") ||
+    lower.includes("customer email reply received") ||
+    lower.includes("status moved to email-review");
+
+  if (!looksLikeEmailReview) return "";
+
+  const requestId = getEmailReviewRequestIdFromMessage(m);
+  const graphPostId = String(
+    artifact?.graphPostId ||
+      artifact?.CustomerReplyGraphPostId ||
+      m?.graphPostId ||
+      m?.CustomerReplyGraphPostId ||
+      ""
+  ).trim();
+
+  if (graphPostId) return `graph:${graphPostId}`;
+
+  const subject = String(
+    artifact?.replySubject ||
+      artifact?.CustomerReplySubject ||
+      m?.CustomerReplySubject ||
+      text.match(/Subject:\s*([^\n]+)/i)?.[1] ||
+      ""
+  )
+    .trim()
+    .toLowerCase();
+
+  const body = String(
+    artifact?.replyBody ||
+      artifact?.CustomerReplyBody ||
+      m?.CustomerReplyBody ||
+      text
+        .replace(/CUSTOMER_EMAIL_REPLY/i, "")
+        .replace(/From:\s*[^\n]+/i, "")
+        .replace(/Subject:\s*[^\n]+/i, "") ||
+      ""
+  )
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase()
+    .slice(0, 220);
+
+  return `fallback:${requestId}|${subject}|${body}`;
+};
+
+const isRawCustomerEmailReplyMessage = (m = {}) => {
+  const text = String(extractMessageText(m) || m?.text || "").trim();
+  return /^CUSTOMER_EMAIL_REPLY\b/i.test(text);
+};
+
+const EmailReviewActionCard = ({
+  replyInfo,
+  requestId,
+  assignedTo,
+  onSubmitForAssessment,
+  onRequestChanges,
+  loading,
+}) => {
+  const bodyPreview = String(replyInfo?.body || "").trim();
+  const displayRequestId =
+    replyInfo?.requestId || requestId || "Current customer request";
+  const displayAssignedTo =
+    replyInfo?.assignedTo || assignedTo || "Assigned engineer";
+  const displayAskType = replyInfo?.askType || "EMAIL REVIEW";
+  const displayStatus = replyInfo?.status || "EMAIL-REVIEW";
+
+  const styles = {
+    shell: {
+      position: "relative",
+      overflow: "hidden",
+      borderRadius: "22px",
+      border: "1px solid rgba(99, 102, 241, 0.22)",
+      background:
+        "linear-gradient(135deg, rgba(255,255,255,0.98), rgba(248,250,255,0.98))",
+      boxShadow:
+        "0 24px 70px rgba(15, 23, 42, 0.12), 0 1px 0 rgba(255,255,255,0.9) inset",
+      padding: "22px",
+    },
+    accent: {
+      position: "absolute",
+      inset: "0 auto 0 0",
+      width: "6px",
+      background: "linear-gradient(180deg, #6366f1, #22c55e)",
+    },
+    top: {
+      display: "flex",
+      alignItems: "flex-start",
+      justifyContent: "space-between",
+      gap: "16px",
+      marginBottom: "18px",
+      paddingLeft: "4px",
+    },
+    eyebrow: {
+      fontSize: "12px",
+      fontWeight: 800,
+      letterSpacing: "0.12em",
+      textTransform: "uppercase",
+      color: "#64748b",
+      marginBottom: "6px",
+    },
+    title: {
+      fontSize: "24px",
+      lineHeight: 1.15,
+      fontWeight: 900,
+      color: "#0f172a",
+      margin: 0,
+    },
+    badgeWrap: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: "8px",
+      justifyContent: "flex-end",
+    },
+    badge: {
+      borderRadius: "999px",
+      padding: "8px 11px",
+      fontSize: "11px",
+      fontWeight: 800,
+      letterSpacing: "0.06em",
+      textTransform: "uppercase",
+      border: "1px solid rgba(99, 102, 241, 0.18)",
+      background: "rgba(238, 242, 255, 0.9)",
+      color: "#3730a3",
+      whiteSpace: "nowrap",
+    },
+    dangerBadge: {
+      borderRadius: "999px",
+      padding: "8px 11px",
+      fontSize: "11px",
+      fontWeight: 800,
+      letterSpacing: "0.06em",
+      textTransform: "uppercase",
+      border: "1px solid rgba(245, 158, 11, 0.25)",
+      background: "rgba(255, 251, 235, 0.95)",
+      color: "#92400e",
+      whiteSpace: "nowrap",
+    },
+    infoGrid: {
+      display: "grid",
+      gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+      gap: "12px",
+      marginBottom: "14px",
+    },
+    infoCard: {
+      borderRadius: "16px",
+      border: "1px solid #e2e8f0",
+      background: "rgba(255,255,255,0.82)",
+      padding: "13px 14px",
+      minWidth: 0,
+    },
+    label: {
+      fontSize: "11px",
+      fontWeight: 800,
+      color: "#64748b",
+      letterSpacing: "0.09em",
+      textTransform: "uppercase",
+      marginBottom: "6px",
+    },
+    value: {
+      fontSize: "14px",
+      fontWeight: 750,
+      color: "#0f172a",
+      wordBreak: "break-word",
+    },
+    replyBox: {
+      borderRadius: "18px",
+      border: "1px solid rgba(148, 163, 184, 0.28)",
+      background: "linear-gradient(180deg, #ffffff, #f8fafc)",
+      padding: "16px",
+      marginTop: "10px",
+      marginBottom: "16px",
+    },
+    footer: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: "16px",
+      borderTop: "1px solid rgba(226, 232, 240, 0.9)",
+      paddingTop: "16px",
+    },
+    hintTitle: {
+      fontSize: "14px",
+      fontWeight: 850,
+      color: "#0f172a",
+      marginBottom: "4px",
+    },
+    hintText: {
+      fontSize: "13px",
+      color: "#64748b",
+      lineHeight: 1.45,
+    },
+    actionWrap: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "flex-end",
+      gap: "10px",
+      flexWrap: "wrap",
+      flexShrink: 0,
+    },
+    secondaryBtn: {
+      minWidth: "170px",
+      minHeight: "48px",
+      borderRadius: "14px",
+      border: "1px solid rgba(99, 102, 241, 0.24)",
+      background: "rgba(255, 255, 255, 0.92)",
+      color: "#3730a3",
+      fontWeight: 850,
+      boxShadow: "0 10px 26px rgba(15, 23, 42, 0.06)",
+    },
+  };
+
+  return (
+    <div style={styles.shell}>
+      <div style={styles.accent} />
+
+      <div style={styles.top}>
+        <div>
+          <div style={styles.eyebrow}>Engineer Action Required</div>
+          <h3 style={styles.title}>Customer reply requires review</h3>
+        </div>
+
+        <div style={styles.badgeWrap}>
+          <span style={styles.dangerBadge}>Pending engineer action</span>
+          <span style={styles.badge}>Ask Type: {displayAskType}</span>
+          <span style={styles.badge}>Status: {displayStatus}</span>
+        </div>
+      </div>
+
+      <div style={styles.infoGrid}>
+        <div style={styles.infoCard}>
+          <div style={styles.label}>Request ID</div>
+          <div style={styles.value}>{displayRequestId}</div>
+        </div>
+
+        <div style={styles.infoCard}>
+          <div style={styles.label}>Assigned To</div>
+          <div style={styles.value}>{displayAssignedTo}</div>
+        </div>
+
+        <div style={styles.infoCard}>
+          <div style={styles.label}>Customer Reply From</div>
+          <div style={styles.value}>
+            {replyInfo?.from || <span className="requestSummaryMuted">Customer</span>}
+          </div>
+        </div>
+
+        <div style={styles.infoCard}>
+          <div style={styles.label}>Email Subject</div>
+          <div style={styles.value}>{replyInfo?.subject || "Customer email reply"}</div>
+        </div>
+      </div>
+
+      {bodyPreview ? (
+        <div style={styles.replyBox}>
+          <div style={styles.label}>Customer Reply Preview</div>
+          <div className="emailDraftPreview markdown-body">
+            <MarkdownRenderer text={bodyPreview} />
+          </div>
+        </div>
+      ) : null}
+
+      <div style={styles.footer}>
+        <div>
+          <div style={styles.hintTitle}>Next step</div>
+          <div style={styles.hintText}>
+            Review the customer response. If accepted, submit for assessment. If the customer asks for a date, quantity, priority, or detail change, open the request for update and send a revised email.
+          </div>
+        </div>
+
+        <div style={styles.actionWrap}>
+          <button
+            type="button"
+            style={styles.secondaryBtn}
+            onClick={onRequestChanges}
+            disabled={loading}
+            title="Open the request form to update date, quantity, priority, or details before resending to the customer."
+          >
+            Request Changes
+          </button>
+
+          <button
+            type="button"
+            className="formSaveBtn premiumFormSaveBtn"
+            onClick={onSubmitForAssessment}
+            disabled={loading}
+            style={{ minWidth: "190px", minHeight: "48px" }}
+          >
+            {loading ? "Submitting..." : "Submit for Assessment"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/* ===============================
    ✅ Email Draft Helpers + Card
    =============================== */
 const looksLikeEmailDraft = (text = "") => {
@@ -199,50 +1244,622 @@ const parseEmailDraftFromText = (text = "", fallbackTo = "") => {
 
   return {
     to: fallbackTo || "",
+    from: CUSTOMER_REQUEST_FROM_EMAIL,
     subject: subject || "Customer Request Update",
     body: body || raw,
   };
 };
 
-const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail }) => {
-  const [isEditing, setIsEditing] = useState(false);
-  const [localDraft, setLocalDraft] = useState(
-    draft || { to: "", subject: "", body: "" }
+
+const isSupplierTaskMessage = (msg = {}) => {
+  const artifactType = String(
+    msg?.artifact?.type ||
+      msg?.supplierTask?.type ||
+      msg?.type ||
+      ""
+  )
+    .toLowerCase()
+    .trim();
+
+  const text = [
+    extractMessageText(msg),
+    msg?.text,
+    typeof msg?.content === "string" ? msg.content : "",
+  ]
+    .filter(Boolean)
+    .join("\n")
+    .toLowerCase();
+
+  return (
+    artifactType === "supplier_task" ||
+    text.includes("supplier task loaded") ||
+    text.includes("please upload the requested document/information")
   );
+};
+
+const isSupplierEmailDraft = (draft = {}, text = "") => {
+  const joined = [
+    draft?.kind,
+    draft?.emailKind,
+    draft?.type,
+    draft?.subject,
+    draft?.Subject,
+    draft?.body,
+    draft?.Body,
+    text,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  return (
+    joined.includes("supplier_fmd_request") ||
+    joined.includes("supplier email draft") ||
+    joined.includes("📧 supplier email draft")
+  );
+};
+
+const stripMarkdownLabel = (value = "") =>
+  String(value || "")
+    .replace(/^\s*[-*•]+\s*/, "")
+    .replace(/^\s*\*\*/g, "")
+    .replace(/\*\*\s*$/g, "")
+    .trim();
+
+const extractMarkdownLabelValue = (text = "", label = "") => {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const patterns = [
+    new RegExp(`^\\s*\\*\\*${escaped}\\s*:\\*\\*\\s*(.+)$`, "im"),
+    new RegExp(`^\\s*${escaped}\\s*:\\s*(.+)$`, "im"),
+  ];
+
+  for (const pattern of patterns) {
+    const match = String(text || "").match(pattern);
+    if (match?.[1]) {
+      return stripMarkdownLabel(match[1]);
+    }
+  }
+
+  return "";
+};
+
+const parseSupplierEmailDraftFromText = (text = "") => {
+  const raw = String(text || "").replace(/\r\n/g, "\n").trim();
+  if (!raw || !isSupplierEmailDraft({}, raw)) return null;
+
+  const lower = raw.toLowerCase();
+  if (
+    lower.includes("supplier task loaded") ||
+    lower.includes("please upload the requested document/information")
+  ) {
+    return null;
+  }
+
+  const to = extractMarkdownLabelValue(raw, "To");
+  const from = extractMarkdownLabelValue(raw, "From") || CUSTOMER_REQUEST_FROM_EMAIL;
+  const subject =
+    extractMarkdownLabelValue(raw, "Subject") ||
+    "Request for Full Material Disclosure";
+
+  const bodyStartMarkers = [
+    "Dear Supplier Team,",
+    "For material compliance assessment,",
+  ];
+
+  let body = "";
+  for (const markerText of bodyStartMarkers) {
+    const idx = raw.indexOf(markerText);
+    if (idx >= 0) {
+      body = raw.slice(idx).trim();
+      break;
+    }
+  }
+
+  if (!body) {
+    body = raw
+      .replace(/✅\s*\*\*Supplier Task Created\*\*/gi, "")
+      .replace(/📧\s*\*\*Supplier Email Draft\*\*/gi, "")
+      .replace(/^\s*\*\*To:\*\*.*$/gim, "")
+      .replace(/^\s*\*\*From:\*\*.*$/gim, "")
+      .replace(/^\s*\*\*Subject:\*\*.*$/gim, "")
+      .trim();
+  }
+
+  return {
+    to,
+    from,
+    subject,
+    body,
+    kind: "supplier_fmd_request",
+    emailKind: "supplier_fmd_request",
+    isSupplierEmail: true,
+  };
+};
+
+const normalizeEmailDraft = (msg = {}, text = "", fallbackTo = "") => {
+  if (isSupplierTaskMessage(msg)) {
+    return null;
+  }
+
+  const directDraft =
+    msg?.emailDraft ||
+    msg?.EmailDraft ||
+    msg?.artifact?.emailDraft ||
+    msg?.artifact?.EmailDraft ||
+    null;
+
+  const artifact = msg?.artifact || null;
+
+  const supplierDraftFromText = parseSupplierEmailDraftFromText(text);
+
+  const draftKind =
+    directDraft?.kind ||
+    directDraft?.emailKind ||
+    artifact?.kind ||
+    artifact?.emailKind ||
+    artifact?.type ||
+    supplierDraftFromText?.kind ||
+    "";
+
+  const subject =
+    directDraft?.subject ||
+    directDraft?.Subject ||
+    artifact?.subject ||
+    artifact?.Subject ||
+    supplierDraftFromText?.subject ||
+    "";
+
+  const body =
+    directDraft?.body ||
+    directDraft?.Body ||
+    artifact?.body ||
+    artifact?.Body ||
+    supplierDraftFromText?.body ||
+    "";
+
+  const to = String(
+    directDraft?.to ||
+      directDraft?.To ||
+      directDraft?.toEmail ||
+      directDraft?.ToEmail ||
+      artifact?.to ||
+      artifact?.To ||
+      artifact?.toEmail ||
+      artifact?.ToEmail ||
+      supplierDraftFromText?.to ||
+      msg?.toEmail ||
+      msg?.ToEmail ||
+      msg?.to ||
+      msg?.To ||
+      ""
+  ).trim();
+
+  const from = String(
+    directDraft?.from ||
+      directDraft?.From ||
+      artifact?.from ||
+      artifact?.From ||
+      supplierDraftFromText?.from ||
+      CUSTOMER_REQUEST_FROM_EMAIL
+  ).trim();
+
+  const isSupplier =
+    Boolean(directDraft?.isSupplierEmail) ||
+    Boolean(artifact?.isSupplierEmail) ||
+    isSupplierEmailDraft(directDraft || artifact || {}, text) ||
+    Boolean(supplierDraftFromText);
+
+  if (subject || body || to || supplierDraftFromText) {
+    return {
+      to,
+      from,
+      subject: subject || (isSupplier ? "Request for Full Material Disclosure" : "Customer Request Update"),
+      body:
+        body ||
+        String(text || "")
+          .replace(/^subject\s*:.*?(\n\n|$)/is, "")
+          .trim(),
+      kind: isSupplier ? "supplier_fmd_request" : draftKind || "customer_request_email",
+      emailKind: isSupplier ? "supplier_fmd_request" : draftKind || "customer_request_email",
+      isSupplierEmail: isSupplier,
+    };
+  }
+
+  if (looksLikeEmailDraft(text)) {
+    return parseEmailDraftFromText(text, to);
+  }
+
+  return null;
+};
+
+const normalizeSupplierTask = (msg = {}) => {
+  const artifact = msg?.supplierTask || msg?.artifact || {};
+  if (!isSupplierTaskMessage(msg) && String(artifact?.type || "").toLowerCase() !== "supplier_task") {
+    return null;
+  }
+
+  const taskItem = artifact?.taskItem || {};
+  const detail = taskItem?.TaskDetail || {};
+
+  const text = String(extractMessageText(msg) || msg?.text || "");
+
+  const pickFromText = (label) => {
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = text.match(new RegExp(`\\*\\*${escaped}:\\*\\*\\s*([^\\n]+)`, "i"));
+    return match?.[1]?.trim() || "";
+  };
+
+  const missing =
+    artifact?.missingInformation ||
+    detail?.MissingInformation ||
+    [];
+
+  const missingInformation = Array.isArray(missing)
+    ? missing.filter(Boolean)
+    : missing
+    ? [missing]
+    : [];
+
+  return {
+    taskId:
+      artifact?.taskId ||
+      taskItem?.TaskId ||
+      pickFromText("Task ID") ||
+      msg?.taskId ||
+      "",
+    taskName:
+      artifact?.taskName ||
+      detail?.TaskName ||
+      pickFromText("Task") ||
+      "Request for Material Disclosure",
+    taskStatus:
+      artifact?.taskStatus ||
+      taskItem?.TaskStatus ||
+      pickFromText("Status") ||
+      "CREATE",
+    taskPriority:
+      artifact?.taskPriority ||
+      taskItem?.TaskPriority ||
+      pickFromText("Priority") ||
+      "MEDIUM",
+    taskType:
+      artifact?.taskType ||
+      taskItem?.TaskType ||
+      pickFromText("Task Type") ||
+      "Supplier Request",
+    requestId:
+      artifact?.requestId ||
+      artifact?.assignedBy ||
+      taskItem?.TaskAssignedBy ||
+      pickFromText("Assigned By Request") ||
+      "",
+    assignedFor:
+      artifact?.assignedFor ||
+      taskItem?.TaskAssignedFor ||
+      pickFromText("Customer / Part") ||
+      "",
+    uploadUrl:
+      artifact?.supplierPortalUrl ||
+      detail?.SupplierPortalUrl ||
+      pickFromText("Upload URL") ||
+      "http://localhost:5173",
+    description:
+      artifact?.taskDescription ||
+      detail?.TaskDescription ||
+      pickFromText("Description") ||
+      "",
+    missingInformation,
+  };
+};
+
+const SupplierTaskCard = ({ task }) => {
+  if (!task) return null;
+
+  const missingItems = Array.isArray(task.missingInformation)
+    ? task.missingInformation.filter(Boolean)
+    : [];
+
+  return (
+    <div
+      className="emailDraftShell premiumEmailDraft supplierTaskCard"
+      style={{
+        position: "relative",
+        overflow: "hidden",
+        borderRadius: "24px",
+        border: "1px solid rgba(13, 148, 136, 0.22)",
+        background:
+          "linear-gradient(145deg, rgba(255,255,255,0.99), rgba(248,250,252,0.96))",
+        boxShadow:
+          "0 24px 70px rgba(15, 23, 42, 0.12), inset 0 1px 0 rgba(255,255,255,0.9)",
+      }}
+    >
+      <div
+        style={{
+          position: "absolute",
+          inset: "0 auto 0 0",
+          width: "6px",
+          background: "linear-gradient(135deg, #0f766e, #2563eb)",
+        }}
+      />
+
+      <div className="emailDraftHeader">
+        <div>
+          <div className="emailDraftEyebrow">Supplier Task</div>
+          <div className="emailDraftTitle">Upload requested FMD information</div>
+          <div
+            style={{
+              marginTop: "8px",
+              color: "#64748b",
+              fontSize: "13px",
+              lineHeight: 1.45,
+            }}
+          >
+            Review the task, upload the requested document or information, then submit it for engineering review.
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <span
+            style={{
+              alignSelf: "center",
+              borderRadius: "999px",
+              padding: "8px 12px",
+              fontSize: "11px",
+              fontWeight: 800,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              color: "#0f766e",
+              background: "rgba(240, 253, 250, 0.96)",
+              border: "1px solid rgba(20, 184, 166, 0.25)",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {task.taskStatus || "CREATE"}
+          </span>
+
+          <span
+            style={{
+              alignSelf: "center",
+              borderRadius: "999px",
+              padding: "8px 12px",
+              fontSize: "11px",
+              fontWeight: 800,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              color: "#3730a3",
+              background: "rgba(238, 242, 255, 0.96)",
+              border: "1px solid rgba(99, 102, 241, 0.2)",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {task.taskType || "Supplier Request"}
+          </span>
+        </div>
+      </div>
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+          gap: "12px",
+          margin: "16px 0",
+        }}
+      >
+        {[
+          ["Task ID", task.taskId || "-"],
+          ["Priority", task.taskPriority || "-"],
+          ["Request ID", task.requestId || "-"],
+          ["Customer / Part", task.assignedFor || "-"],
+        ].map(([label, value]) => (
+          <div
+            key={label}
+            style={{
+              borderRadius: "16px",
+              border: "1px solid #e2e8f0",
+              background: "rgba(255,255,255,0.82)",
+              padding: "13px 14px",
+              minWidth: 0,
+            }}
+          >
+            <div
+              style={{
+                fontSize: "11px",
+                fontWeight: 800,
+                color: "#64748b",
+                letterSpacing: "0.09em",
+                textTransform: "uppercase",
+                marginBottom: "6px",
+              }}
+            >
+              {label}
+            </div>
+            <div style={{ fontSize: "14px", fontWeight: 750, color: "#0f172a", wordBreak: "break-word" }}>
+              {value}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="emailDraftBodyCard">
+        <div className="emailDraftPreview markdown-body">
+          <p><strong>Task:</strong> {task.taskName || "Request for Material Disclosure"}</p>
+
+          <p><strong>Requested Information:</strong></p>
+          {missingItems.length ? (
+            <ul>
+              {missingItems.map((item, index) => (
+                <li key={`${item}-${index}`}>{String(item)}</li>
+              ))}
+            </ul>
+          ) : (
+            <p>Full Material Disclosure document</p>
+          )}
+
+          <p><strong>Description:</strong> {task.description || "-"}</p>
+
+          <p>
+            <strong>Upload URL:</strong>{" "}
+            <a href={task.uploadUrl} target="_blank" rel="noreferrer">
+              {task.uploadUrl}
+            </a>
+          </p>
+        </div>
+      </div>
+
+      <div className="emailDraftFooter">
+        <div className="emailDraftFooterHint">
+          Upload support is the next step. For now, this card confirms the supplier task assignment and requested information.
+        </div>
+
+        <div className="emailDraftFooterActions">
+          <button type="button" className="premiumGhostBtn">
+            Upload Document
+          </button>
+          <button type="button" className="formSaveBtn premiumFormSaveBtn">
+            Submit for Review
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail }) => {
+  const isSupplier = Boolean(draft?.isSupplierEmail) || isSupplierEmailDraft(draft);
+  const defaultDraft = {
+    to: "",
+    from: CUSTOMER_REQUEST_FROM_EMAIL,
+    subject: "",
+    body: "",
+    kind: isSupplier ? "supplier_fmd_request" : "customer_request_email",
+    emailKind: isSupplier ? "supplier_fmd_request" : "customer_request_email",
+    isSupplierEmail: isSupplier,
+  };
+
+  const [isEditing, setIsEditing] = useState(false);
+  const [localDraft, setLocalDraft] = useState(draft || defaultDraft);
   const [statusMsg, setStatusMsg] = useState("");
 
   useEffect(() => {
-    setLocalDraft(draft || { to: "", subject: "", body: "" });
+    const nextIsSupplier =
+      Boolean(draft?.isSupplierEmail) || isSupplierEmailDraft(draft);
+    setLocalDraft(
+      draft || {
+        ...defaultDraft,
+        kind: nextIsSupplier ? "supplier_fmd_request" : "customer_request_email",
+        emailKind: nextIsSupplier ? "supplier_fmd_request" : "customer_request_email",
+        isSupplierEmail: nextIsSupplier,
+      }
+    );
     setStatusMsg("");
     setIsEditing(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft]);
 
   if (!draft) return null;
 
   const updateField = (key, value) => {
+    if (key === "from") return;
     setLocalDraft((prev) => ({ ...prev, [key]: value }));
   };
 
   const handleSave = () => {
-    onSaveDraft?.(localDraft);
+    onSaveDraft?.({
+      ...localDraft,
+      from: localDraft?.from || CUSTOMER_REQUEST_FROM_EMAIL,
+      isSupplierEmail: isSupplier,
+      kind: isSupplier ? "supplier_fmd_request" : localDraft?.kind || "customer_request_email",
+      emailKind: isSupplier ? "supplier_fmd_request" : localDraft?.emailKind || "customer_request_email",
+    });
     setStatusMsg("Draft saved locally.");
     setIsEditing(false);
   };
 
   const handleSend = () => {
-    onSendEmail?.(localDraft);
+    onSendEmail?.({
+      ...localDraft,
+      from: localDraft?.from || CUSTOMER_REQUEST_FROM_EMAIL,
+      isSupplierEmail: isSupplier,
+      kind: isSupplier ? "supplier_fmd_request" : localDraft?.kind || "customer_request_email",
+      emailKind: isSupplier ? "supplier_fmd_request" : localDraft?.emailKind || "customer_request_email",
+    });
     setStatusMsg("Send action triggered.");
   };
 
+  const accent = isSupplier
+    ? "linear-gradient(135deg, #0f766e, #2563eb)"
+    : "linear-gradient(135deg, #4f46e5, #7c3aed)";
+
   return (
-    <div className="emailDraftShell">
+    <div
+      className={`emailDraftShell premiumEmailDraft ${
+        isSupplier ? "supplierEmailDraft" : "customerEmailDraft"
+      }`}
+      style={{
+        position: "relative",
+        overflow: "hidden",
+        borderRadius: "24px",
+        border: isSupplier
+          ? "1px solid rgba(13, 148, 136, 0.22)"
+          : "1px solid rgba(99, 102, 241, 0.22)",
+        background:
+          "linear-gradient(145deg, rgba(255,255,255,0.98), rgba(248,250,252,0.96))",
+        boxShadow:
+          "0 24px 70px rgba(15, 23, 42, 0.12), inset 0 1px 0 rgba(255,255,255,0.9)",
+      }}
+    >
+      <div
+        style={{
+          position: "absolute",
+          inset: "0 auto 0 0",
+          width: "6px",
+          background: accent,
+        }}
+      />
+
       <div className="emailDraftHeader">
         <div>
-          <div className="emailDraftEyebrow">Customer Email Draft</div>
-          <div className="emailDraftTitle">Review before sending</div>
+          <div className="emailDraftEyebrow">
+            {isSupplier ? "Supplier Email Draft" : "Customer Email Draft"}
+          </div>
+          <div className="emailDraftTitle">
+            {isSupplier
+              ? "Request FMD documents from supplier"
+              : "Review before sending"}
+          </div>
+          {isSupplier ? (
+            <div
+              style={{
+                marginTop: "8px",
+                color: "#64748b",
+                fontSize: "13px",
+                lineHeight: 1.45,
+              }}
+            >
+              This email includes the supplier upload URL and OTP login instruction.
+            </div>
+          ) : null}
         </div>
 
-        <div className="emailDraftActionsTop">
+        <div className="emailDraftActionsTop" style={{ display: "flex", gap: "10px" }}>
+          <span
+            style={{
+              alignSelf: "center",
+              borderRadius: "999px",
+              padding: "8px 12px",
+              fontSize: "11px",
+              fontWeight: 800,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              color: isSupplier ? "#0f766e" : "#3730a3",
+              background: isSupplier ? "rgba(240, 253, 250, 0.96)" : "rgba(238, 242, 255, 0.96)",
+              border: isSupplier ? "1px solid rgba(20, 184, 166, 0.25)" : "1px solid rgba(99, 102, 241, 0.2)",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {isSupplier ? "Supplier Request" : "Customer Review"}
+          </span>
+
           <button
             type="button"
             className="premiumGhostBtn"
@@ -261,7 +1878,7 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail }) => {
               className="emailDraftInput"
               value={localDraft.to}
               onChange={(e) => updateField("to", e.target.value)}
-              placeholder="customer@example.com"
+              placeholder={isSupplier ? "supplier@example.com" : "customer@example.com"}
             />
           ) : (
             <div className="emailDraftMetaValue">
@@ -270,6 +1887,13 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail }) => {
               )}
             </div>
           )}
+        </div>
+
+        <div className="emailDraftMetaRow">
+          <div className="emailDraftMetaLabel">From</div>
+          <div className="emailDraftMetaValue strong">
+            {localDraft.from || CUSTOMER_REQUEST_FROM_EMAIL}
+          </div>
         </div>
 
         <div className="emailDraftMetaRow">
@@ -311,6 +1935,8 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail }) => {
         <div className="emailDraftFooterHint">
           {isEditing
             ? "Edit the draft and save your changes before sending."
+            : isSupplier
+            ? "Preview the supplier-facing FMD request email before sending."
             : "Preview the customer-facing email draft."}
         </div>
 
@@ -328,7 +1954,7 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail }) => {
             className="formSaveBtn premiumFormSaveBtn"
             onClick={handleSend}
           >
-            Send Email
+            {isSupplier ? "Send to Supplier" : "Send Email"}
           </button>
         </div>
       </div>
@@ -355,13 +1981,43 @@ const PRIORITY_OPTIONS = ["Low", "Medium", "High", "Critical"];
 
 const buildCustomerRequestFormDraft = (raw = {}) => {
   const safe = raw && typeof raw === "object" ? raw : {};
+  const requestDetail = safe.RequestDetail || safe.RequestDetails || {};
+  const customerDetail = safe.CustomerDetail || safe.CustomerDetails || {};
 
-  const customerName = safe.CustomerName ?? "";
-  const customerPartName = safe.CustomerPartName ?? "";
-  const customerPartNumber = safe.CustomerPartNumber ?? "";
-  const requestDescription = safe.RequestDescription ?? "";
-  const requestCompletionDate = safe.RequestCompletionDate ?? "";
-  const requestPriority = safe.RequestPriority ?? "Medium";
+  const customerName = safe.CustomerName ?? customerDetail.CustomerName ?? "";
+  const customerPartName =
+    safe.CustomerPartName ?? customerDetail.CustomerPartName ?? "";
+  const customerPartNumber =
+    safe.CustomerPartNumber ?? customerDetail.CustomerPartNumber ?? "";
+  const requestName =
+    safe.RequestName ?? safe.title ?? requestDetail.RequestName ?? "";
+  const requestDescription =
+    safe.RequestDescription ?? requestDetail.RequestDescription ?? "";
+  const requestType = safe.RequestType ?? requestDetail.RequestType ?? "";
+  const requestCompletionDate =
+    safe.RequestCompletionDateTime ??
+    safe.RequestCompletionDate ??
+    requestDetail.RequestCompletionDateTime ??
+    "";
+  const requestPriority =
+    safe.RequestPriority ?? requestDetail.RequestPriority ?? "Medium";
+  const requestorMethod =
+    safe.RequestorMethod ?? requestDetail.RequestorMethod ?? "EMAIL";
+  const requestorContent = requestDescription;
+  const requestConfirmationEmail =
+    safe.RequestConfirmationEmail ?? requestDetail.RequestConfirmationEmail ?? "";
+
+  const notifyCustomer = Boolean(
+    safe.NotifyCustomer ?? safe.notifyCustomer ?? false
+  );
+  const customerEmail =
+    safe.CustomerEmail ??
+    safe.customerEmail ??
+    safe.CustomerContactEmail ??
+    safe.CustomerContactEmailId ??
+    customerDetail.CustomerContactEmailId ??
+    customerDetail.CustomerContactEmail ??
+    "";
 
   const existingFields = Array.isArray(safe.fields) ? safe.fields : [];
 
@@ -388,9 +2044,36 @@ const buildCustomerRequestFormDraft = (raw = {}) => {
     CustomerName: customerName,
     CustomerPartName: customerPartName,
     CustomerPartNumber: customerPartNumber,
+    RequestName: requestName,
     RequestDescription: requestDescription,
+    RequestType: requestType,
+    RequestCompletionDateTime: requestCompletionDate,
     RequestCompletionDate: requestCompletionDate,
     RequestPriority: requestPriority,
+    RequestorMethod: requestorMethod,
+    RequestorContent: requestorContent,
+    RequestConfirmationEmail: requestConfirmationEmail,
+    NotifyCustomer: notifyCustomer,
+    CustomerEmail: customerEmail,
+    CustomerContactEmailId: customerEmail,
+    EmailFrom: CUSTOMER_REQUEST_FROM_EMAIL,
+    RequestDetail: {
+      ...(safe.RequestDetail || {}),
+      RequestName: requestName,
+      RequestDescription: requestDescription,
+      RequestType: requestType,
+      RequestPriority: requestPriority,
+      RequestCompletionDateTime: requestCompletionDate,
+      RequestorMethod: requestorMethod,
+      RequestorContent: requestorContent,
+      RequestConfirmationEmail: requestConfirmationEmail,
+    },
+    CustomerDetail: {
+      ...(safe.CustomerDetail || {}),
+      CustomerPartNumber: customerPartNumber,
+      CustomerPartName: customerPartName,
+      CustomerContactEmailId: customerEmail,
+    },
     fields: [
       makeField("CustomerName", "Customer Name", "text", customerName, true),
       makeField(
@@ -407,6 +2090,8 @@ const buildCustomerRequestFormDraft = (raw = {}) => {
         customerPartNumber,
         true
       ),
+      makeField("RequestName", "Request Name", "text", requestName, true),
+      makeField("RequestType", "Request Type", "text", requestType, true),
       makeField(
         "RequestDescription",
         "Request Description",
@@ -428,6 +2113,14 @@ const buildCustomerRequestFormDraft = (raw = {}) => {
         requestPriority,
         true
       ),
+      makeField(
+        "NotifyCustomer",
+        "Notify Customer",
+        "checkbox",
+        notifyCustomer,
+        false
+      ),
+      makeField("CustomerEmail", "Customer Email", "email", customerEmail, false),
     ],
   };
 };
@@ -436,23 +2129,12 @@ const FormEditorCard = ({
   formDraft,
   setFormDraft,
   onSave,
-  onSubmitForReview,
+  onGenerateEmailDraft,
+  onNotifyCustomerSelected,
   saving,
-  submittingForReview,
+  generatingEmailDraft,
   saveMsg,
 }) => {
-  const [isSubmitted, setIsSubmitted] = useState(false);
-
-  useEffect(() => {
-    setIsSubmitted(false);
-  }, [formDraft]);
-
-  useEffect(() => {
-    if (typeof saveMsg === "string" && saveMsg.includes("✅")) {
-      setIsSubmitted(true);
-    }
-  }, [saveMsg]);
-
   if (!formDraft) return null;
 
   const isCustomerRequestForm =
@@ -461,7 +2143,9 @@ const FormEditorCard = ({
         "CustomerName",
         "CustomerPartName",
         "CustomerPartNumber",
+        "RequestName",
         "RequestDescription",
+        "RequestType",
         "RequestCompletionDate",
         "RequestPriority",
       ].includes(f?.key)
@@ -478,10 +2162,23 @@ const FormEditorCard = ({
   const updateField = (key, nextVal) => {
     setFormDraft((prev) => {
       if (!prev) return prev;
+
+      const previousValue = prev[key];
       const next = { ...prev, [key]: nextVal };
       next.fields = (next.fields || []).map((f) =>
         f.key === key ? { ...f, value: nextVal } : f
       );
+
+      if (
+        key === "NotifyCustomer" &&
+        Boolean(previousValue) === false &&
+        Boolean(nextVal) === true
+      ) {
+        setTimeout(() => {
+          onNotifyCustomerSelected?.(next);
+        }, 0);
+      }
+
       return next;
     });
   };
@@ -552,9 +2249,9 @@ const FormEditorCard = ({
           <button
             className="formSaveBtn"
             onClick={onSave}
-            disabled={saving || isSubmitted}
+            disabled={saving || !onSave}
           >
-            {isSubmitted ? "Submitted" : saving ? "Submitting..." : "Submit"}
+            {saving ? "Saving..." : "Save"}
           </button>
           {saveMsg ? <div className="formSaveMsg">{saveMsg}</div> : null}
         </div>
@@ -569,7 +2266,12 @@ const FormEditorCard = ({
   );
 
   const requestFields = allFields.filter((f) =>
-    ["RequestDescription", "RequestCompletionDate"].includes(f.key)
+    [
+      "RequestName",
+      "RequestType",
+      "RequestDescription",
+      "RequestCompletionDate",
+    ].includes(f.key)
   );
 
   const priorityField =
@@ -599,11 +2301,16 @@ const FormEditorCard = ({
   const customerName = String(getValueByKey("CustomerName") || "").trim();
   const customerPartName = String(getValueByKey("CustomerPartName") || "").trim();
   const customerPartNumber = String(getValueByKey("CustomerPartNumber") || "").trim();
+  const requestName = String(getValueByKey("RequestName") || "").trim();
+  const requestType = String(getValueByKey("RequestType") || "").trim();
   const requestDescription = String(getValueByKey("RequestDescription") || "").trim();
+  const requestorContent = requestDescription;
   const requestCompletionDate = String(
     getValueByKey("RequestCompletionDate") || ""
   ).trim();
   const selectedPriority = String(getFieldValue(priorityField) || "Medium");
+  const notifyCustomer = Boolean(getValueByKey("NotifyCustomer"));
+  const customerEmail = String(getValueByKey("CustomerEmail") || "").trim();
 
   const requiredChecks = [
     { key: "CustomerName", label: "Customer Name", value: customerName },
@@ -613,6 +2320,8 @@ const FormEditorCard = ({
       label: "Customer Part Number",
       value: customerPartNumber,
     },
+    { key: "RequestName", label: "Request Name", value: requestName },
+    { key: "RequestType", label: "Request Type", value: requestType },
     {
       key: "RequestDescription",
       label: "Request Description",
@@ -655,6 +2364,12 @@ const FormEditorCard = ({
       missingRequired.some((m) => m.key === f.key);
 
     const getHelpText = () => {
+      if (f.key === "RequestName") {
+        return "Example: Material Declaration, Compliance Assessment, or IMDS Submission.";
+      }
+      if (f.key === "RequestType") {
+        return "Example: IMDS Submission, Material Compliance, or Regulatory Review.";
+      }
       if (f.key === "RequestDescription") {
         return "Describe the business need, expected outcome, and any relevant context.";
       }
@@ -711,8 +2426,24 @@ const FormEditorCard = ({
   };
 
   return (
-    <div className="request-form-shell">
-      <div className="request-form-main">
+    <div
+      className="request-form-shell"
+      style={{
+        display: "grid",
+        gridTemplateColumns: "minmax(0, 1fr) minmax(280px, 340px)",
+        gap: "24px",
+        alignItems: "start",
+        width: "100%",
+      }}
+    >
+      <div
+        className="request-form-main"
+        style={{
+          alignSelf: "start",
+          marginTop: 0,
+          minWidth: 0,
+        }}
+      >
         <div className="formCard formCardPremium">
           <div className="premiumFormHeader">
             <div>
@@ -730,7 +2461,7 @@ const FormEditorCard = ({
                   className={`premiumMetaBadge ${formReady ? "ready" : "pending"}`}
                 >
                   <span className="premiumMetaDot" />
-                  {formReady ? "Ready to save" : "Needs attention"}
+                  {formReady ? "Ready" : "Needs attention"}
                 </div>
                 <div className="premiumMetaBadge">
                   <span className="premiumMetaDot" />
@@ -739,7 +2470,7 @@ const FormEditorCard = ({
               </div>
             </div>
 
-            <div className="premiumFormHint">Edit and review before save</div>
+            <div className="premiumFormHint">Edit and review</div>
           </div>
 
           <div className="requestProgressCard">
@@ -831,16 +2562,85 @@ const FormEditorCard = ({
                 ))}
               </div>
             </div>
+
+            <div className="premiumFormGroup premiumFormGroupFull">
+              <label className="premiumFormLabel">Notify Customer</label>
+
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "10px",
+                  marginTop: "8px",
+                }}
+              >
+                <input
+                  id="notify-customer-checkbox"
+                  type="checkbox"
+                  checked={notifyCustomer}
+                  onChange={(e) =>
+                    updateField("NotifyCustomer", e.target.checked)
+                  }
+                />
+                <label
+                  htmlFor="notify-customer-checkbox"
+                  style={{
+                    fontSize: "14px",
+                    fontWeight: 500,
+                    color: "#24324a",
+                    cursor: "pointer",
+                  }}
+                >
+                  Select Notify Customer
+                </label>
+              </div>
+
+              <div className="premiumFieldHelp" style={{ marginTop: "8px" }}>
+                When enabled, email draft generation starts directly from this request.
+              </div>
+            </div>
+
+            {notifyCustomer ? (
+              <div className="premiumFormGrid">
+                <div className="premiumFormGroup premiumFormGroupFull">
+                  <label className="premiumFormLabel">Customer Email</label>
+                  <input
+                    className="premiumFormInput"
+                    type="email"
+                    value={customerEmail}
+                    onChange={(e) =>
+                      updateField("CustomerEmail", e.target.value)
+                    }
+                    placeholder="customer@example.com"
+                  />
+                </div>
+
+                <div className="premiumFormGroup premiumFormGroupFull">
+                  <label className="premiumFormLabel">From</label>
+                  <input
+                    className="premiumFormInput"
+                    type="text"
+                    value={CUSTOMER_REQUEST_FROM_EMAIL}
+                    readOnly
+                  />
+                  <div className="premiumFieldHelp">
+                    This sender email is fixed as requested.
+                  </div>
+                </div>
+              </div>
+            ) : null}
           </div>
 
           <div className="formFooter premiumFormFooter">
             <div className="premiumFormFooterLeft">
               <div className="premiumFormFooterTitle">
-                {formReady ? "Form is ready to save" : "Complete the required fields"}
+                {formReady ? "Form is ready" : "Complete the required fields"}
               </div>
               <div className="premiumFormFooterSub">
                 {formReady
-                  ? "Review the summary and save this request to the session."
+                  ? notifyCustomer
+                    ? "Customer notification is enabled. Email draft generation will start directly."
+                    : "Review the summary and save this request."
                   : `${missingRequired.length} required field${
                       missingRequired.length > 1 ? "s are" : " is"
                     } still missing.`}
@@ -848,38 +2648,28 @@ const FormEditorCard = ({
             </div>
 
             <div className="premiumFormFooterActions">
-              <button
-                type="button"
-                className="premiumGhostBtn"
-                onClick={() => {
-                  console.log("Run an Assistant clicked");
-                }}
-              >
-                Run an Assistant
-              </button>
 
-              <button
-                type="button"
-                className="premiumGhostBtn"
-                onClick={onSave}
-                disabled={saving || submittingForReview || isSubmitted}
-              >
-                {saving ? "Saving..." : "Save Draft"}
-              </button>
+              {!notifyCustomer && (
+                <button
+                  type="button"
+                  className="formSaveBtn premiumFormSaveBtn"
+                  onClick={onSave}
+                  disabled={saving || !formReady}
+                >
+                  {saving ? "Submitting..." : "Submit for Review"}
+                </button>
+              )}
 
-              <button
-                className={`formSaveBtn premiumFormSaveBtn ${
-                  isSubmitted ? "submitted" : ""
-                }`}
-                onClick={onSubmitForReview}
-                disabled={saving || submittingForReview || isSubmitted || !formReady}
-              >
-                {isSubmitted
-                  ? "Submitted"
-                  : submittingForReview
-                  ? "Submitting..."
-                  : "Submit for Review"}
-              </button>
+              {notifyCustomer && (
+                <button
+                  type="button"
+                  className="formSaveBtn premiumFormSaveBtn"
+                  onClick={onGenerateEmailDraft}
+                  disabled={saving || generatingEmailDraft || !formReady}
+                >
+                  {generatingEmailDraft ? "Generating..." : "Generate Email Draft"}
+                </button>
+              )}
             </div>
 
             {saveMsg ? <div className="formSaveMsg">{saveMsg}</div> : null}
@@ -887,8 +2677,19 @@ const FormEditorCard = ({
         </div>
       </div>
 
-      <aside className="request-form-side">
-        <div className="requestSideCard">
+      <aside
+        className="request-form-side"
+        style={{
+          alignSelf: "start",
+          marginTop: 0,
+          paddingTop: 0,
+          display: "flex",
+          flexDirection: "column",
+          gap: "16px",
+          minWidth: 0,
+        }}
+      >
+        <div className="requestSideCard" style={{ marginTop: 0 }}>
           <div className="requestSideCardTitle">Request Summary</div>
 
           <div className="requestSummaryList">
@@ -920,6 +2721,24 @@ const FormEditorCard = ({
             </div>
 
             <div className="requestSummaryItem">
+              <div className="requestSummaryLabel">Request Name</div>
+              <div className="requestSummaryValue">
+                {requestName || (
+                  <span className="requestSummaryMuted">Not provided</span>
+                )}
+              </div>
+            </div>
+
+            <div className="requestSummaryItem">
+              <div className="requestSummaryLabel">Request Type</div>
+              <div className="requestSummaryValue">
+                {requestType || (
+                  <span className="requestSummaryMuted">Not provided</span>
+                )}
+              </div>
+            </div>
+
+            <div className="requestSummaryItem">
               <div className="requestSummaryLabel">Priority</div>
               <div className="requestSummaryValue">
                 {selectedPriority || (
@@ -936,6 +2755,33 @@ const FormEditorCard = ({
                 )}
               </div>
             </div>
+
+            <div className="requestSummaryItem">
+              <div className="requestSummaryLabel">Notify Customer</div>
+              <div className="requestSummaryValue">
+                {notifyCustomer ? "Yes" : "No"}
+              </div>
+            </div>
+
+            {notifyCustomer ? (
+              <>
+                <div className="requestSummaryItem">
+                  <div className="requestSummaryLabel">Customer Email</div>
+                  <div className="requestSummaryValue">
+                    {customerEmail || (
+                      <span className="requestSummaryMuted">Not provided</span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="requestSummaryItem">
+                  <div className="requestSummaryLabel">From</div>
+                  <div className="requestSummaryValue">
+                    {CUSTOMER_REQUEST_FROM_EMAIL}
+                  </div>
+                </div>
+              </>
+            ) : null}
           </div>
         </div>
 
@@ -955,8 +2801,7 @@ const FormEditorCard = ({
             </div>
           ) : (
             <div className="requestReadyBox">
-              All required fields are completed. The request is ready to be
-              reviewed and saved.
+              All required fields are completed. The request is ready.
             </div>
           )}
         </div>
@@ -1021,7 +2866,9 @@ const normalizeSuggestionStatus = (rawStatus = "") => {
   if (
     raw === "IN_PROGRESS" ||
     raw === "REQUEST_IN_PROGRESS" ||
-    raw === "REQUEST_PROGRESS"
+    raw === "REQUEST_PROGRESS" ||
+    raw === "ASSESSMENT_INPROGRESS" ||
+    raw === "ASSESSMENT_IN_PROGRESS"
   ) {
     return "IN_PROGRESS";
   }
@@ -1050,8 +2897,10 @@ const getSuggestionStatusValue = (item) => {
   const raw = String(
     item?.requestStatus ||
       item?.status ||
+      item?.rawRequestStatus ||
       item?.RequestStatus ||
       item?.Status ||
+      item?.RawRequestStatus ||
       ""
   );
   return normalizeSuggestionStatus(raw);
@@ -1068,6 +2917,7 @@ const getSuggestionDateValue = (item) => {
     item?.statusUpdatedAt ||
     item?.updatedAt ||
     item?.lastUpdatedAt ||
+    item?.lastActivityAt ||
     item?.requestUpdatedAt ||
     item?.RequestUpdatedDateTime ||
     item?.RequestLoggedDateTime ||
@@ -1148,7 +2998,7 @@ const InlineCustomerRequestStarterCard = ({
       return true;
     });
 
-    if (!q) return clean.slice(0, 8);
+    if (!q) return clean.slice(0, 20);
 
     return clean
       .filter((s) => {
@@ -1159,10 +3009,12 @@ const InlineCustomerRequestStarterCard = ({
           String(parsed.requestId || "").toLowerCase().includes(q) ||
           String(parsed.partName || "").toLowerCase().includes(q) ||
           String(parsed.partNumber || "").toLowerCase().includes(q) ||
-          statusLabel.includes(q)
+          statusLabel.includes(q) ||
+          String(s?.sessionId || "").toLowerCase().includes(q) ||
+          String(s?.title || "").toLowerCase().includes(q)
         );
       })
-      .slice(0, 10);
+      .slice(0, 20);
   }, [query, suggestions, existingStatusFilter]);
 
   const isExistingOpen = mode === "existing";
@@ -1170,35 +3022,15 @@ const InlineCustomerRequestStarterCard = ({
   return (
     <div className="customer-request-inline-card">
       <div className="customer-request-inline-eyebrow">
-        Customer Request Assistant
+        CUSTOMER REQUEST ASSISTANT 
       </div>
 
       <h2 className="customer-request-inline-title">
-        I will assist you to create a new customer request.
+         I will assist you to create a new request / review existing request
       </h2>
 
-      <p className="customer-request-inline-subtitle">
-        Let me ask a few questions to point you in the right direction. Your
-        answers will help me populate the customer request form exactly to your
-        needs.
-      </p>
-
-      <div className="customer-request-mini-flow">
-        <div className="customer-request-mini-step">
-          <span className="customer-request-mini-step-number">1</span>
-          Provide details
-        </div>
-        <div className="customer-request-mini-arrow">→</div>
-        <div className="customer-request-mini-step">
-          <span className="customer-request-mini-step-number">2</span>
-          Review form
-        </div>
-        <div className="customer-request-mini-arrow">→</div>
-        <div className="customer-request-mini-step">
-          <span className="customer-request-mini-step-number">3</span>
-          Save request
-        </div>
-      </div>
+    
+      
 
       <div className="customer-request-inline-grid">
         <button
@@ -1220,7 +3052,7 @@ const InlineCustomerRequestStarterCard = ({
           </div>
 
           <div className="customer-request-option-text">
-            Start a fresh request and continue step by step inside this chat.
+             Let me assist you by asking few questions. Your response will help me populate the customer request form exactly to your needs. 
           </div>
         </button>
 
@@ -1254,7 +3086,7 @@ const InlineCustomerRequestStarterCard = ({
           </div>
 
           <div className="customer-request-option-text">
-            Search by request ID, customer part number, or customer part name.
+             Let me assist you in finding the customer request that you need to work on. You can search using Customer Request Id, Customer Part Number or Name
           </div>
         </button>
       </div>
@@ -1376,7 +3208,10 @@ const InlineCustomerRequestStarterCard = ({
                               </span>
 
                               {!!parsed.partNumber && (
-                                <span className="part-number"> • {parsed.partNumber}</span>
+                                <span className="part-number">
+                                  {" "}
+                                  • {parsed.partNumber}
+                                </span>
                               )}
                             </div>
                           </div>
@@ -1420,8 +3255,7 @@ const InlineCustomerRequestStarterCard = ({
       </div>
 
       <div className="customer-request-helper-note">
-        Continue an existing request or start a new guided workflow from this
-        assistant.
+        
       </div>
     </div>
   );
@@ -1501,6 +3335,7 @@ const ChatWindow = ({
   user,
   onFirstMessage,
   adoptServerSessionId,
+  refreshSidebar,
   showIdleWarning,
   idleSecondsLeft,
   agentMode,
@@ -1522,7 +3357,7 @@ const ChatWindow = ({
   const [showForm, setShowForm] = useState(false);
   const [formDraft, setFormDraft] = useState(null);
   const [savingForm, setSavingForm] = useState(false);
-  const [submittingForReview, setSubmittingForReview] = useState(false);
+  const [generatingEmailDraft, setGeneratingEmailDraft] = useState(false);
   const [formSaveMsg, setFormSaveMsg] = useState("");
   const [formInsertIndex, setFormInsertIndex] = useState(null);
 
@@ -1533,6 +3368,17 @@ const ChatWindow = ({
   );
   const [existingRequestsLoading, setExistingRequestsLoading] = useState(false);
 
+  const [showCustomerReplyModal, setShowCustomerReplyModal] = useState(false);
+  const [customerReplySubject, setCustomerReplySubject] = useState("");
+  const [customerReplyBody, setCustomerReplyBody] = useState("");
+  const [processingCustomerReply, setProcessingCustomerReply] = useState(false);
+  const [submittingEmailReview, setSubmittingEmailReview] = useState(false);
+
+  // Real backend request status used by the workflow fulfillment bar.
+  // This is refreshed from Customer Request Store so the bar does not depend only
+  // on old chat text like "REQUEST-CONFIRMED".
+  const [currentRequestStatusOverride, setCurrentRequestStatusOverride] = useState("");
+
   const scrollRef = useRef(null);
   const textareaRef = useRef(null);
   const uploadBtnRef = useRef(null);
@@ -1540,6 +3386,57 @@ const ChatWindow = ({
   const chatIdRef = useRef(chat?.id);
   const visibleMessageCountRef = useRef(0);
   const customerRequestSearchSeqRef = useRef(0);
+
+  const getActiveSessionId = useCallback(() => {
+    // Prefer React prop over ref. The ref can lag behind immediately after
+    // clicking a sidebar session, which was causing email drafts to use the
+    // previous request id in the subject.
+    const active = chat?.id || chatIdRef.current || "default-chat";
+    chatIdRef.current = active;
+    return active;
+  }, [chat?.id]);
+
+  const isRequestMonitoringSession = useMemo(() => {
+    const active = String(chat?.id || chat?.title || "").trim().toLowerCase();
+    return (
+      active === "request monitoring & status" ||
+      active.includes("request monitoring") ||
+      active.includes("monitoring & status")
+    );
+  }, [chat?.id, chat?.title]);
+
+  const isCustomerRequestSession = useCallback((sessionId = "") => {
+    return /^REQ[A-Z]?#\d{8}#\d{6}-/i.test(String(sessionId || ""));
+  }, []);
+
+  const adoptSessionFromResponseSafely = useCallback(
+    async (res, fallbackSessionId) => {
+      const returnedSessionId =
+        res?.newSessionId || res?.sessionId || res?.SessionId || "";
+
+      // Once we are inside a real customer request session, do not let a save
+      // or email-draft response move the UI to a newly generated request id.
+      if (isCustomerRequestSession(fallbackSessionId)) {
+        chatIdRef.current = fallbackSessionId;
+        return fallbackSessionId;
+      }
+
+      if (returnedSessionId && returnedSessionId !== fallbackSessionId) {
+        chatIdRef.current = returnedSessionId;
+        await adoptServerSessionId?.(returnedSessionId);
+        await refreshSidebar?.();
+        return returnedSessionId;
+      }
+
+      if (returnedSessionId) {
+        chatIdRef.current = returnedSessionId;
+        return returnedSessionId;
+      }
+
+      return fallbackSessionId;
+    },
+    [adoptServerSessionId, refreshSidebar, isCustomerRequestSession]
+  );
 
   useLayoutEffect(() => {
     chatIdRef.current = chat?.id;
@@ -1554,13 +3451,29 @@ const ChatWindow = ({
     setFormSaveMsg("");
     setIsStartingCustomerRequest(false);
     setFormInsertIndex(null);
+    setShowCustomerReplyModal(false);
+    setCustomerReplySubject("");
+    setCustomerReplyBody("");
+    setProcessingCustomerReply(false);
+    setSubmittingEmailReview(false);
+    setCurrentRequestStatusOverride("");
   }, [chat?.id]);
 
   useEffect(() => {
-    setLiveCustomerRequestSuggestions(
-      Array.isArray(customerRequestSuggestions) ? customerRequestSuggestions : []
+    setLiveCustomerRequestSuggestions((prev) =>
+      mergeUniqueRequestSuggestions(
+        Array.isArray(customerRequestSuggestions) ? customerRequestSuggestions : [],
+        prev
+      )
     );
   }, [customerRequestSuggestions]);
+
+  const mergedCustomerRequestSuggestions = useMemo(() => {
+    return mergeUniqueRequestSuggestions(
+      liveCustomerRequestSuggestions,
+      Array.isArray(customerRequestSuggestions) ? customerRequestSuggestions : []
+    );
+  }, [liveCustomerRequestSuggestions, customerRequestSuggestions]);
 
   const hasValidFormState = (state) => {
     if (!state || typeof state !== "object") return false;
@@ -1583,6 +3496,24 @@ const ChatWindow = ({
     );
   };
 
+  const getPreferredCustomerEmail = useCallback((msg = null) => {
+    return String(
+      msg?.artifact?.to ||
+        msg?.artifact?.To ||
+        msg?.artifact?.toEmail ||
+        msg?.artifact?.ToEmail ||
+        msg?.artifact?.emailDraft?.to ||
+        msg?.artifact?.EmailDraft?.to ||
+        msg?.emailDraft?.to ||
+        msg?.EmailDraft?.to ||
+        msg?.toEmail ||
+        msg?.ToEmail ||
+        msg?.to ||
+        msg?.To ||
+        ""
+    ).trim();
+  }, []);
+
   const addMessage = (msg) => {
     const sender = msg.sender || (msg.role === "assistant" ? "bot" : "user");
 
@@ -1597,30 +3528,37 @@ const ChatWindow = ({
     const attachmentsRaw = msg.attachments ?? msg.Attachments ?? [];
     const attachments = Array.isArray(attachmentsRaw) ? attachmentsRaw : [];
 
-    const emailDraft =
-      msg.emailDraft ||
-      (sender === "bot" && looksLikeEmailDraft(text)
-        ? parseEmailDraftFromText(text, user?.email || "")
-        : null);
+    const emailDraft = normalizeEmailDraft(
+      msg,
+      text,
+      getPreferredCustomerEmail(msg)
+    );
+    const supplierTask = normalizeSupplierTask(msg);
 
-    updateMessages((prev) => [
-      ...prev,
-      {
-        ...msg,
-        sender,
-        text,
-        role: msg.role || (sender === "bot" ? "assistant" : "user"),
-        content: msg.content ?? text,
-        attachments,
-        artifact: msg.artifact || null,
-        flowType: msg.flowType || null,
-        step: msg.step || null,
-        question: msg.question || null,
-        options: Array.isArray(msg.options) ? msg.options : [],
-        inputType: msg.inputType || null,
-        emailDraft,
-      },
-    ]);
+    const nextMessage = {
+      ...msg,
+      sender,
+      text,
+      role: msg.role || (sender === "bot" ? "assistant" : "user"),
+      content: msg.content ?? text,
+      attachments,
+      artifact: msg.artifact || null,
+      supplierTask,
+      flowType: msg.flowType || null,
+      step: msg.step || null,
+      question: msg.question || null,
+      options: Array.isArray(msg.options) ? msg.options : [],
+      inputType: msg.inputType || null,
+      emailDraft,
+    };
+
+    updateMessages((prev) => {
+      const last = prev?.[prev.length - 1];
+      if (isSameCustomerFlowCard(last, nextMessage)) {
+        return prev;
+      }
+      return [...prev, nextMessage];
+    });
   };
 
   const normalize = (raw = []) =>
@@ -1638,11 +3576,12 @@ const ChatWindow = ({
       const attachmentsRaw = m.attachments ?? m.Attachments ?? [];
       const attachments = Array.isArray(attachmentsRaw) ? attachmentsRaw : [];
 
-      const emailDraft =
-        m.emailDraft ||
-        (sender === "bot" && looksLikeEmailDraft(text)
-          ? parseEmailDraftFromText(text, user?.email || "")
-          : null);
+      const emailDraft = normalizeEmailDraft(
+        m,
+        text,
+        getPreferredCustomerEmail(m)
+      );
+      const supplierTask = normalizeSupplierTask(m);
 
       return {
         id: m.id || `msg-${i}`,
@@ -1652,6 +3591,7 @@ const ChatWindow = ({
         content: m.content ?? text,
         attachments,
         artifact: m.artifact || null,
+        supplierTask,
         flowType: m.flowType || null,
         step: m.step || null,
         question: m.question || null,
@@ -1661,45 +3601,121 @@ const ChatWindow = ({
       };
     });
 
+  const hasActiveCustomerFlow = useMemo(() => {
+    const raw = chat?.messages || [];
+    return raw.some(
+      (m) =>
+        m?.flowType === "customer_request" ||
+        isCustomerFlowQuestionText(extractMessageText(m))
+    );
+  }, [chat?.messages]);
+
   const cleanedMessages = useMemo(() => {
     const raw = chat?.messages || [];
+    const activeRequestId = extractRequestIdFromSessionId(chat?.id || "");
+
+    const dedupedRaw = [];
+    const seenEmailReviewKeys = new Set();
+
+    for (const item of raw) {
+      const previous = dedupedRaw[dedupedRaw.length - 1];
+      if (isSameCustomerFlowCard(previous, item)) {
+        continue;
+      }
+
+      // Hide raw backend marker/user messages. The assistant review card below
+      // presents the customer reply in a cleaner way.
+      if (isRawCustomerEmailReplyMessage(item)) {
+        continue;
+      }
+
+      // Frontend safety: even if DynamoDB already has duplicate poller rows,
+      // show only one card per customer reply.
+      //
+      // IMPORTANT:
+      // Do not run request-id filtering for normal markdown/status messages.
+      // Request Monitoring tables contain REQC#... text, and the old logic was
+      // treating that as an email-review request id, then hiding the status table
+      // because the active session is "Request Monitoring & Status".
+      const emailReviewKey = getEmailReviewDedupeKey(item);
+      if (emailReviewKey) {
+        const emailReviewRequestId = getEmailReviewRequestIdFromMessage(item);
+        const isRealActiveRequest = /^REQ[A-Z]?#/i.test(activeRequestId || "");
+
+        if (
+          isRealActiveRequest &&
+          emailReviewRequestId &&
+          emailReviewRequestId.toLowerCase() !== activeRequestId.toLowerCase()
+        ) {
+          continue;
+        }
+
+        if (seenEmailReviewKeys.has(emailReviewKey)) {
+          continue;
+        }
+        seenEmailReviewKeys.add(emailReviewKey);
+      }
+
+      dedupedRaw.push(item);
+    }
 
     const flowQuestions = new Set(
-      raw
-        .filter((m) => m?.flowType === "customer_request")
-        .map((m) => String(m?.question || "").trim().toLowerCase())
+      dedupedRaw
+        .filter(
+          (m) =>
+            m?.flowType === "customer_request" ||
+            isCustomerFlowQuestionText(extractMessageText(m))
+        )
+        .map((m) =>
+          String(m?.question || extractMessageText(m) || "")
+            .trim()
+            .toLowerCase()
+        )
         .filter(Boolean)
     );
 
-    return raw.filter((m, idx) => {
+    return dedupedRaw.filter((m, idx) => {
       const sender = extractMessageSender(m);
       const text = String(extractMessageText(m) || "").trim().toLowerCase();
 
       if (isSystemFlowMarkerText(text)) return false;
 
       if (isCustomerRequestStarterSession) {
-        if (m?.flowType === "customer_request") return false;
-        if (text === "create a new customer request") return false;
-        if (text === "select customer name") return false;
-        if (text === "select customer part name") return false;
-        if (text === "select customer part number") return false;
-        if (text === "select customer part name and number") return false;
-        if (text === "enter customer name") return false;
-        if (text === "enter customer part name") return false;
-        if (text === "enter customer part number") return false;
+        if (
+          !m?.flowType &&
+          (text === "create a new customer request" ||
+            text === "select customer name" ||
+            text === "select customer part name" ||
+            text === "select customer part number" ||
+            text === "select customer part name and number" ||
+            text === "enter customer name" ||
+            text === "enter customer part name" ||
+            text === "enter customer part number")
+        ) {
+          return false;
+        }
       }
 
       const hasAttachments =
         Array.isArray(m?.attachments) && m.attachments.length > 0;
       const hasArtifact = !!m?.artifact;
-      const isFlowCard = m?.flowType === "customer_request";
+      const isFlowCard =
+        m?.flowType === "customer_request" || isCustomerFlowQuestionText(text);
       const isEmail =
         !!m?.emailDraft || (sender === "bot" && looksLikeEmailDraft(text));
 
-      const next = raw[idx + 1];
-      const prev = raw[idx - 1];
-      const nextQuestion = String(next?.question || "").trim().toLowerCase();
-      const prevQuestion = String(prev?.question || "").trim().toLowerCase();
+      const next = dedupedRaw[idx + 1];
+      const prev = dedupedRaw[idx - 1];
+      const nextQuestion = String(
+        next?.question || extractMessageText(next) || ""
+      )
+        .trim()
+        .toLowerCase();
+      const prevQuestion = String(
+        prev?.question || extractMessageText(prev) || ""
+      )
+        .trim()
+        .toLowerCase();
 
       const isPlainAssistantFlowPrompt =
         sender === "bot" &&
@@ -1716,16 +3732,125 @@ const ChatWindow = ({
 
       return true;
     });
-  }, [chat?.messages, isCustomerRequestStarterSession]);
+  }, [chat?.messages, chat?.id, isCustomerRequestStarterSession]);
 
   const normalizedMessages = useMemo(
     () => normalize(cleanedMessages),
-    [cleanedMessages, user?.email]
+    [cleanedMessages, getPreferredCustomerEmail]
   );
+
+  const hasVisibleCustomerFlowCard = useMemo(() => {
+    return normalizedMessages.some(
+      (m) =>
+        m?.flowType === "customer_request" ||
+        isCustomerFlowQuestionText(extractMessageText(m))
+    );
+  }, [normalizedMessages]);
+
+  const currentRequestStatus = useMemo(() => {
+    const backendStatus = normalizeWorkflowStatus(currentRequestStatusOverride);
+    const formStatus = normalizeWorkflowStatus(
+      formDraft?.RequestStatus || formDraft?.requestStatus || ""
+    );
+    const messageStatus = extractCurrentRequestStatusFromMessages(normalizedMessages);
+    const hasSupplierPending = hasSupplierPendingAssessmentSignal(normalizedMessages);
+
+    // KC/FMD rule:
+    // If supplier FMD task/email is created, assessment is still in progress.
+    // Do not let an older REQUEST-CONFIRMED form/sidebar value keep the
+    // fulfillment bar behind the actual workflow.
+    if (
+      hasSupplierPending &&
+      (!backendStatus ||
+        backendStatus === "REQUEST-CONFIRMED" ||
+        backendStatus === "ASSESSMENT-TRIGGERED" ||
+        backendStatus === "ASSESSMENT-COMPLETED")
+    ) {
+      return "ASSESSMENT-INPROGRESS";
+    }
+
+    // Priority:
+    // 1) real status refreshed from backend/DynamoDB
+    // 2) supplier pending signal from chat
+    // 3) current form state
+    // 4) fallback from chat messages
+    return backendStatus || formStatus || messageStatus;
+  }, [currentRequestStatusOverride, formDraft, normalizedMessages]);
+
+  const shouldShowWorkflowFulfillmentBar = useMemo(() => {
+    // Supplier task screen is not the customer request lifecycle screen.
+    // Hide the right-side request fulfillment bar when supplier is logged into
+    // a TSKS/TSKE task or when the loaded message is a supplier task card.
+    if (isSupplierTaskSessionId(chat?.id)) return false;
+    if (hasLoadedSupplierTaskMessage(normalizedMessages)) return false;
+
+    return Boolean(currentRequestStatus);
+  }, [chat?.id, currentRequestStatus, normalizedMessages]);
+
+
+  const workflowSections = useMemo(() => {
+    return WORKFLOW_STATUS_ORDER.map((status) => ({
+      key: status,
+      status,
+      label: status
+        .toLowerCase()
+        .split("-")
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(" "),
+      elementId: `workflow-${status}`,
+    }));
+  }, []);
+
+  const workflowAnchorIdsByMessageIndex = useMemo(() => {
+    const assigned = new Set();
+    const anchorMap = {};
+
+    normalizedMessages.forEach((message, index) => {
+      const status = extractWorkflowStatusFromMessage(message);
+      if (!status || assigned.has(status)) return;
+
+      assigned.add(status);
+      anchorMap[index] = `workflow-${status}`;
+    });
+
+    return anchorMap;
+  }, [normalizedMessages]);
 
   useEffect(() => {
     visibleMessageCountRef.current = normalizedMessages.length;
   }, [normalizedMessages.length]);
+
+  const computedFormInsertIndex = useMemo(() => {
+    if (!showForm || !formDraft) return null;
+
+    let lastPreparedFormIndex = -1;
+    for (let i = 0; i < normalizedMessages.length; i += 1) {
+      const text = extractMessageText(normalizedMessages[i]);
+      if (isPreparedFormMessage(text)) {
+        lastPreparedFormIndex = i;
+      }
+    }
+
+    if (lastPreparedFormIndex >= 0) {
+      return lastPreparedFormIndex + 1;
+    }
+
+    const firstReviewPromptIndex = normalizedMessages.findIndex((m) =>
+      isReviewPromptMessage(extractMessageText(m))
+    );
+    if (firstReviewPromptIndex >= 0) {
+      return firstReviewPromptIndex;
+    }
+
+    const firstEmailIndex = normalizedMessages.findIndex(
+      (m) => !!m?.emailDraft
+    );
+    if (firstEmailIndex >= 0) {
+      return firstEmailIndex;
+    }
+
+    return formInsertIndex === null ? normalizedMessages.length : formInsertIndex;
+  }, [normalizedMessages, showForm, formDraft, formInsertIndex]);
 
   const openFormInline = (nextDraft, options = {}) => {
     const { afterNextMessage = false } = options;
@@ -1743,13 +3868,19 @@ const ChatWindow = ({
   useEffect(() => {
     if (hasValidFormState(formState)) {
       const hydrated = buildCustomerRequestFormDraft(formState);
+
       setShowForm(true);
-      setFormDraft(hydrated);
       setFormSaveMsg("");
+
+      setFormDraft((prev) => {
+        const prevStr = JSON.stringify(prev || {});
+        const nextStr = JSON.stringify(hydrated || {});
+        return prevStr === nextStr ? prev : hydrated;
+      });
 
       setFormInsertIndex((prev) => {
         if (prev !== null) return prev;
-        return getPersistedFormInsertIndex(normalizedMessages);
+        return getPersistedFormInsertIndex(chat?.messages || []);
       });
 
       return;
@@ -1759,7 +3890,49 @@ const ChatWindow = ({
     setFormDraft(null);
     setFormSaveMsg("");
     setFormInsertIndex(null);
-  }, [formState, chat?.id, normalizedMessages]);
+  }, [formState, chat?.id, chat?.messages]);
+
+  const pushLocalCustomerRequestSuggestion = useCallback(
+    ({
+      sessionId,
+      requestId,
+      customerName,
+      customerPartName,
+      customerPartNumber,
+      requestStatus,
+    }) => {
+      const sid = String(sessionId || "").trim();
+      if (!sid) return;
+
+      const rid = String(requestId || "").trim();
+      const partName = String(customerPartName || "").trim();
+      const partNumber = String(customerPartNumber || "").trim();
+      const customer = String(customerName || "").trim();
+      const rawStatus = String(requestStatus || "REQUEST-CREATE").trim();
+
+      const optimisticItem = {
+        sessionId: sid,
+        requestId: rid,
+        title: partName || rid || sid,
+        customerName: customer,
+        customerPartName: partName,
+        customerPartNumber: partNumber,
+        requestStatus: rawStatus,
+        rawRequestStatus: rawStatus,
+        status: rawStatus,
+        lastActivityAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        ageDays: 0,
+        daysInState: 0,
+        sourceType: "local_optimistic",
+      };
+
+      setLiveCustomerRequestSuggestions((prev) =>
+        mergeUniqueRequestSuggestions([optimisticItem], prev)
+      );
+    },
+    []
+  );
 
   const AttachmentRow = ({ att }) => {
     const name = att.fileName || att.name || "file";
@@ -1770,7 +3943,7 @@ const ChatWindow = ({
     const onDownload = async () => {
       try {
         const token = await getAccessToken();
-        const sessionId = chat?.id || chatIdRef.current || null;
+        const sessionId = getActiveSessionId() || null;
 
         const data = await downloadFilePresigned(
           {
@@ -1887,22 +4060,51 @@ const ChatWindow = ({
     return { replyText: raw, artifact: null };
   };
 
+  const getBackendReplyText = (res = {}) => {
+    const directCandidates = [
+      res?.reply,
+      res?.message,
+      res?.answer,
+      res?.text,
+      res?.assistantText,
+      res?.assistantReply,
+      res?.chatReply,
+      res?.statusMarkdown,
+      res?.markdown,
+      res?.output,
+      res?.response,
+      res?.result?.reply,
+      res?.result?.message,
+      res?.payload?.reply,
+      res?.payload?.message,
+      res?.data?.reply,
+      res?.data?.message,
+      res?.body?.reply,
+      res?.body?.message,
+    ];
+
+    for (const value of directCandidates) {
+      if (typeof value === "string" && value.trim()) {
+        return value;
+      }
+    }
+
+    if (typeof res?.body === "string" && res.body.trim()) {
+      try {
+        return getBackendReplyText(JSON.parse(res.body));
+      } catch (e) {
+        return res.body;
+      }
+    }
+
+    return "";
+  };
+
+  const isStatusRequestText = (value = "") =>
+    /\b(status|dashboard|monitoring)\b/i.test(String(value || ""));
+
   const adoptSessionFromResponse = async (res, fallbackSessionId) => {
-    const returnedSessionId =
-      res?.newSessionId || res?.sessionId || res?.SessionId || "";
-
-    if (returnedSessionId && returnedSessionId !== fallbackSessionId) {
-      chatIdRef.current = returnedSessionId;
-      await adoptServerSessionId?.(returnedSessionId);
-      return returnedSessionId;
-    }
-
-    if (returnedSessionId) {
-      chatIdRef.current = returnedSessionId;
-      return returnedSessionId;
-    }
-
-    return fallbackSessionId;
+    return adoptSessionFromResponseSafely(res, fallbackSessionId);
   };
 
   const handleSearchExistingCustomerRequests = useCallback(
@@ -1915,17 +4117,16 @@ const ChatWindow = ({
 
       try {
         const token = await getAccessToken();
-
-        const res = await searchCustomerRequests(token, query, "ALL");
+        const res = await searchCustomerRequests(token, query, statusFilter);
 
         if (customerRequestSearchSeqRef.current !== seq) return;
 
         const items = Array.isArray(res?.items) ? res.items : [];
-        setLiveCustomerRequestSuggestions(items);
+        setLiveCustomerRequestSuggestions((prev) =>
+          mergeUniqueRequestSuggestions(items, prev)
+        );
       } catch (e) {
         console.error("Customer request search failed:", e);
-        if (customerRequestSearchSeqRef.current !== seq) return;
-        setLiveCustomerRequestSuggestions([]);
       } finally {
         if (customerRequestSearchSeqRef.current === seq) {
           setExistingRequestsLoading(false);
@@ -1935,8 +4136,146 @@ const ChatWindow = ({
     [user?.email]
   );
 
+  const getWorkflowStatusFromCustomerRequestItem = useCallback((item = {}) => {
+    return normalizeWorkflowStatus(
+      item?.requestStatus ||
+        item?.RequestStatus ||
+        item?.rawRequestStatus ||
+        item?.RawRequestStatus ||
+        item?.status ||
+        item?.Status ||
+        item?.workflowState ||
+        item?.WorkflowState ||
+        ""
+    );
+  }, []);
+
+  const getWorkflowStatusFromApiResponse = useCallback(
+    (res = {}) => {
+      const directStatus = normalizeWorkflowStatus(
+        res?.requestStatus ||
+          res?.RequestStatus ||
+          res?.currentStatus ||
+          res?.CurrentStatus ||
+          res?.status ||
+          res?.Status ||
+          res?.workflowState ||
+          res?.WorkflowState ||
+          res?.item?.RequestStatus ||
+          res?.item?.requestStatus ||
+          res?.request?.RequestStatus ||
+          res?.request?.requestStatus ||
+          ""
+      );
+
+      if (directStatus) return directStatus;
+
+      const items = Array.isArray(res?.items)
+        ? res.items
+        : Array.isArray(res?.Items)
+        ? res.Items
+        : [];
+
+      for (const item of items) {
+        const status = getWorkflowStatusFromCustomerRequestItem(item);
+        if (status) return status;
+      }
+
+      return "";
+    },
+    [getWorkflowStatusFromCustomerRequestItem]
+  );
+
+  const refreshActiveRequestStatus = useCallback(async () => {
+    const workingSessionId = getActiveSessionId();
+
+    if (!isCustomerRequestSession(workingSessionId) || !user?.email) {
+      return "";
+    }
+
+    const activeRequestId = extractRequestIdFromSessionId(workingSessionId);
+    if (!activeRequestId) return "";
+
+    try {
+      const token = await getAccessToken();
+      const res = await searchCustomerRequests(token, activeRequestId, "ALL");
+
+      const items = Array.isArray(res?.items)
+        ? res.items
+        : Array.isArray(res?.Items)
+        ? res.Items
+        : [];
+
+      const matchedItem =
+        items.find((item) => {
+          const itemSessionId = String(
+            item?.sessionId || item?.SessionId || ""
+          ).trim();
+          const itemRequestId = String(
+            item?.requestId || item?.RequestId || ""
+          ).trim();
+
+          return (
+            itemRequestId === activeRequestId ||
+            extractRequestIdFromSessionId(itemSessionId) === activeRequestId ||
+            itemSessionId.includes(activeRequestId)
+          );
+        }) || items[0];
+
+      const status = getWorkflowStatusFromCustomerRequestItem(matchedItem);
+
+      if (status) {
+        setCurrentRequestStatusOverride(status);
+
+        setLiveCustomerRequestSuggestions((prev) =>
+          mergeUniqueRequestSuggestions(
+            [
+              {
+                ...(matchedItem || {}),
+                sessionId: matchedItem?.sessionId || matchedItem?.SessionId || workingSessionId,
+                requestId: matchedItem?.requestId || matchedItem?.RequestId || activeRequestId,
+                requestStatus: status,
+                rawRequestStatus: status,
+                status,
+                lastActivityAt: new Date().toISOString(),
+              },
+            ],
+            prev
+          )
+        );
+      }
+
+      return status;
+    } catch (e) {
+      console.warn("Failed to refresh active request status:", e);
+      return "";
+    }
+  }, [
+    getActiveSessionId,
+    getWorkflowStatusFromCustomerRequestItem,
+    isCustomerRequestSession,
+    user?.email,
+  ]);
+
+  useEffect(() => {
+    const workingSessionId = getActiveSessionId();
+
+    if (!isCustomerRequestSession(workingSessionId)) {
+      setCurrentRequestStatusOverride("");
+      return undefined;
+    }
+
+    refreshActiveRequestStatus();
+
+    const timer = window.setInterval(() => {
+      refreshActiveRequestStatus();
+    }, 15000);
+
+    return () => window.clearInterval(timer);
+  }, [chat?.id, getActiveSessionId, isCustomerRequestSession, refreshActiveRequestStatus]);
+
   const handleFileSelect = async (file) => {
-    const currentChatId = chat?.id || chatIdRef.current;
+    const currentChatId = getActiveSessionId();
     if (!file || !currentChatId || !user) return;
 
     chatIdRef.current = currentChatId;
@@ -2067,25 +4406,146 @@ const ChatWindow = ({
     setPendingDocTypeAtt(null);
   };
 
-  const buildNormalizedFormPayload = () => {
-    const baseDraft = formDraft || {};
+  const buildNormalizedFormPayload = (draftOverride = null) => {
+    const baseDraft = draftOverride || formDraft || {};
+
+    const activeSessionId = getActiveSessionId();
+    const activeRequestId = extractRequestIdFromSessionId(activeSessionId);
 
     const normalizedPayload = {
+      RequestId: activeRequestId || baseDraft.RequestId || "",
+      SessionId: activeSessionId || baseDraft.SessionId || "",
       CustomerName: baseDraft.CustomerName || "",
       CustomerPartName: baseDraft.CustomerPartName || "",
       CustomerPartNumber: baseDraft.CustomerPartNumber || "",
+      RequestName: baseDraft.RequestName || baseDraft.title || "",
       RequestDescription: baseDraft.RequestDescription || "",
-      RequestCompletionDate: baseDraft.RequestCompletionDate || "",
+      RequestType: baseDraft.RequestType || "",
+      RequestCompletionDateTime:
+        baseDraft.RequestCompletionDateTime || baseDraft.RequestCompletionDate || "",
+      RequestCompletionDate:
+        baseDraft.RequestCompletionDate || baseDraft.RequestCompletionDateTime || "",
       RequestPriority: baseDraft.RequestPriority || "Medium",
+      RequestorMethod: baseDraft.RequestorMethod || "EMAIL",
+      RequestorContent:
+        baseDraft.RequestorContent || baseDraft.RequestDescription || "",
+      RequestConfirmationEmail: baseDraft.RequestConfirmationEmail || "",
+      NotifyCustomer: Boolean(baseDraft.NotifyCustomer),
+      CustomerEmail: baseDraft.CustomerEmail || baseDraft.CustomerContactEmailId || "",
+      CustomerContactEmailId:
+        baseDraft.CustomerContactEmailId || baseDraft.CustomerEmail || "",
+      EmailFrom: CUSTOMER_REQUEST_FROM_EMAIL,
     };
+
+    const visibleFieldValues = {};
 
     if (Array.isArray(baseDraft.fields)) {
       for (const f of baseDraft.fields) {
         if (f?.key) {
-          normalizedPayload[f.key] = f.value ?? "";
+          const nextValue = f.value ?? "";
+          normalizedPayload[f.key] = nextValue;
+          visibleFieldValues[f.key] = nextValue;
         }
       }
     }
+
+    // IMPORTANT:
+    // In the Request Changes flow, the engineer edits the visible form fields.
+    // Those visible field values must be the final source of truth for every
+    // editable value before saving/generating the revised customer email.
+    const latestCustomerName = String(
+      visibleFieldValues.CustomerName ?? normalizedPayload.CustomerName ?? ""
+    ).trim();
+
+    const latestCustomerPartName = String(
+      visibleFieldValues.CustomerPartName ?? normalizedPayload.CustomerPartName ?? ""
+    ).trim();
+
+    const latestCustomerPartNumber = String(
+      visibleFieldValues.CustomerPartNumber ?? normalizedPayload.CustomerPartNumber ?? ""
+    ).trim();
+
+    const latestRequestName = String(
+      visibleFieldValues.RequestName ?? normalizedPayload.RequestName ?? ""
+    ).trim();
+
+    const latestRequestType = String(
+      visibleFieldValues.RequestType ?? normalizedPayload.RequestType ?? ""
+    ).trim();
+
+    const latestRequestDescription = String(
+      visibleFieldValues.RequestDescription ??
+        normalizedPayload.RequestDescription ??
+        ""
+    ).trim();
+
+    const latestRequestPriority = String(
+      visibleFieldValues.RequestPriority ?? normalizedPayload.RequestPriority ?? "Medium"
+    ).trim();
+
+    const latestVisibleCompletionDate = String(
+      visibleFieldValues.RequestCompletionDate ??
+        normalizedPayload.RequestCompletionDate ??
+        normalizedPayload.RequestCompletionDateTime ??
+        ""
+    ).trim();
+
+    const latestCustomerEmail = String(
+      visibleFieldValues.CustomerEmail ??
+        normalizedPayload.CustomerEmail ??
+        normalizedPayload.CustomerContactEmailId ??
+        ""
+    ).trim();
+
+    const latestNotifyCustomer =
+      visibleFieldValues.NotifyCustomer !== undefined
+        ? Boolean(visibleFieldValues.NotifyCustomer)
+        : Boolean(normalizedPayload.NotifyCustomer);
+
+    normalizedPayload.CustomerName = latestCustomerName;
+    normalizedPayload.CustomerPartName = latestCustomerPartName;
+    normalizedPayload.CustomerPartNumber = latestCustomerPartNumber;
+    normalizedPayload.RequestName = latestRequestName;
+    normalizedPayload.RequestType = latestRequestType;
+    normalizedPayload.RequestDescription = latestRequestDescription;
+    normalizedPayload.RequestPriority = latestRequestPriority || "Medium";
+
+    // Keep both date fields synced with the latest edited visible value.
+    normalizedPayload.RequestCompletionDate = latestVisibleCompletionDate;
+    normalizedPayload.RequestCompletionDateTime = latestVisibleCompletionDate;
+
+    normalizedPayload.NotifyCustomer = latestNotifyCustomer;
+    normalizedPayload.CustomerEmail = latestCustomerEmail;
+    normalizedPayload.CustomerContactEmailId = latestCustomerEmail;
+    normalizedPayload.EmailFrom = CUSTOMER_REQUEST_FROM_EMAIL;
+
+    normalizedPayload.RequestorMethod =
+      normalizedPayload.RequestorMethod || "EMAIL";
+    normalizedPayload.RequestorContent =
+      latestRequestDescription || normalizedPayload.RequestorContent || "";
+
+    // Re-apply after fields loop so a stale form field cannot overwrite it.
+    normalizedPayload.RequestId = activeRequestId || normalizedPayload.RequestId || "";
+    normalizedPayload.SessionId = activeSessionId || normalizedPayload.SessionId || "";
+
+    normalizedPayload.CustomerPart = `${normalizedPayload.CustomerPartNumber || ""}#${normalizedPayload.CustomerPartName || ""}`.replace(/^#|#$/g, "");
+
+    normalizedPayload.RequestDetail = {
+      RequestName: normalizedPayload.RequestName || "",
+      RequestDescription: normalizedPayload.RequestDescription || "",
+      RequestType: normalizedPayload.RequestType || "",
+      RequestPriority: normalizedPayload.RequestPriority || "Medium",
+      RequestCompletionDateTime: normalizedPayload.RequestCompletionDateTime || "",
+      RequestorMethod: normalizedPayload.RequestorMethod || "EMAIL",
+      RequestorContent: normalizedPayload.RequestorContent || "",
+      RequestConfirmationEmail: normalizedPayload.RequestConfirmationEmail || "",
+    };
+
+    normalizedPayload.CustomerDetail = {
+      CustomerPartNumber: normalizedPayload.CustomerPartNumber || "",
+      CustomerPartName: normalizedPayload.CustomerPartName || "",
+      CustomerContactEmailId: normalizedPayload.CustomerEmail || "",
+    };
 
     return normalizedPayload;
   };
@@ -2099,7 +4559,7 @@ const ChatWindow = ({
     try {
       const token = await getAccessToken();
 
-      const workingSessionId = chatIdRef.current || chat?.id || "default-chat";
+      const workingSessionId = getActiveSessionId();
       const normalizedPayload = buildNormalizedFormPayload();
 
       const requestBody = {
@@ -2115,10 +4575,26 @@ const ChatWindow = ({
       const nextSavedDraft = buildCustomerRequestFormDraft({
         ...formDraft,
         ...normalizedPayload,
+        RequestId:
+          extractRequestIdFromSessionId(workingSessionId) ||
+          formDraft?.RequestId ||
+          res?.requestId ||
+          res?.RequestId ||
+          "",
+        SessionId: workingSessionId,
       });
 
       setFormDraft(nextSavedDraft);
       onFormStateChange?.(workingSessionId, nextSavedDraft);
+
+      pushLocalCustomerRequestSuggestion({
+        sessionId: res?.newSessionId || res?.sessionId || workingSessionId,
+        requestId: nextSavedDraft?.RequestId || res?.requestId || "",
+        customerName: nextSavedDraft?.CustomerName || "",
+        customerPartName: nextSavedDraft?.CustomerPartName || "",
+        customerPartNumber: nextSavedDraft?.CustomerPartNumber || "",
+        requestStatus: "REQUEST-CREATE",
+      });
 
       await adoptSessionFromResponse(res, workingSessionId);
     } catch (e) {
@@ -2130,82 +4606,148 @@ const ChatWindow = ({
     }
   };
 
-  const handleSubmitForReview = async () => {
-    if (!formDraft || !user?.email) return;
+  const handleGenerateEmailDraftFromForm = useCallback(
+    async (draftOverride = null, options = {}) => {
+      if (!user?.email) return;
 
-    setSubmittingForReview(true);
-    setFormSaveMsg("");
+      const { silentPrompt = false } = options;
 
-    try {
-      const token = await getAccessToken();
-      const workingSessionId = chatIdRef.current || chat?.id || "default-chat";
-      const normalizedPayload = buildNormalizedFormPayload();
+      try {
+        setGeneratingEmailDraft(true);
+        setFormSaveMsg("");
 
-      const requestBody = {
-        session: {
-          SessionId: workingSessionId,
-        },
-        payload: {
+        const token = await getAccessToken();
+        const workingSessionId = getActiveSessionId();
+        const normalizedPayload = buildNormalizedFormPayload(draftOverride);
+
+        const requestBody = {
+          session: {
+            SessionId: workingSessionId,
+          },
+          payload: normalizedPayload,
+        };
+
+        const saveRes = await saveGeneratedForm(requestBody, token);
+
+        const nextSavedDraft = buildCustomerRequestFormDraft({
+          ...(draftOverride || formDraft || {}),
           ...normalizedPayload,
-          submitForReview: true,
-        },
-      };
+          RequestId:
+            extractRequestIdFromSessionId(workingSessionId) ||
+            draftOverride?.RequestId ||
+            formDraft?.RequestId ||
+            saveRes?.requestId ||
+            saveRes?.RequestId ||
+            "",
+          SessionId: workingSessionId,
+        });
 
-      const res = await saveGeneratedForm(requestBody, token);
+        setFormDraft(nextSavedDraft);
+        onFormStateChange?.(workingSessionId, nextSavedDraft);
 
-      setFormSaveMsg("✅ Submitted for review");
+        pushLocalCustomerRequestSuggestion({
+          sessionId: saveRes?.newSessionId || saveRes?.sessionId || workingSessionId,
+          requestId: nextSavedDraft?.RequestId || saveRes?.requestId || "",
+          customerName: nextSavedDraft?.CustomerName || "",
+          customerPartName: nextSavedDraft?.CustomerPartName || "",
+          customerPartNumber: nextSavedDraft?.CustomerPartNumber || "",
+          requestStatus: "REQUEST-CREATE",
+        });
 
-      const nextSavedDraft = buildCustomerRequestFormDraft({
-        ...formDraft,
-        ...normalizedPayload,
-      });
+        const adoptedSessionId = await adoptSessionFromResponse(
+          saveRes,
+          workingSessionId
+        );
 
-      setFormDraft(nextSavedDraft);
-      onFormStateChange?.(workingSessionId, nextSavedDraft);
+        const activeSessionId = adoptedSessionId || workingSessionId;
 
-      const adoptedSessionId = await adoptSessionFromResponse(
-        res,
-        workingSessionId
-      );
+        if (!silentPrompt) {
+          addMessage({
+            sender: "bot",
+            role: "assistant",
+            text:
+              "Would you like me to generate a professional customer email draft for this request? You can review and edit it before sending.",
+          });
+        }
 
-      if (res?.reviewChatReply) {
+        const draftRes = await sendChatMessage(
+          activeSessionId,
+          "generate email draft",
+          user.email,
+          token,
+          [],
+          false
+        );
+
+        await adoptSessionFromResponse(draftRes, activeSessionId);
+
+        let artifact = draftRes?.artifact || draftRes?.Artifact || draftRes?.payload?.artifact || null;
+        let replyText = getBackendReplyText(draftRes);
+
+        if (!artifact) {
+          const parsed = tryParseArtifact(replyText);
+          artifact = parsed.artifact || null;
+          replyText = parsed.replyText || "";
+        }
+
+        const lockedArtifact = lockArtifactToSession(
+          artifact,
+          activeSessionId,
+          nextSavedDraft
+        );
+        const lockedEmailDraft = lockEmailDraftToSession(
+          draftRes?.emailDraft || null,
+          activeSessionId,
+          nextSavedDraft
+        );
+        const lockedReplyText = lockReplyTextSubjectToSession(
+          replyText,
+          activeSessionId,
+          nextSavedDraft
+        );
+
         addMessage({
           sender: "bot",
           role: "assistant",
-          text: res.reviewChatReply,
+          text: lockedReplyText || "Email draft generated successfully.",
+          artifact: lockedArtifact,
+          emailDraft: lockedEmailDraft,
+          toEmail:
+            draftRes?.toEmail ||
+            lockedEmailDraft?.to ||
+            lockedArtifact?.to ||
+            "",
         });
-      }
 
-      if (adoptedSessionId) {
-        chatIdRef.current = adoptedSessionId;
+        setFormSaveMsg("✅ Email draft generated");
+      } catch (e) {
+        console.error("Generate email draft failed:", e);
+        const msg = e?.message || "Failed to generate email draft";
+        setFormSaveMsg(`❌ ${msg}`);
+        addMessage({
+          sender: "bot",
+          role: "assistant",
+          text: `❌ ${msg}`,
+        });
+      } finally {
+        setGeneratingEmailDraft(false);
       }
-    } catch (e) {
-      console.error("Submit for review failed:", e);
-      const msg = e?.message || "Submit for review failed";
-      setFormSaveMsg(`❌ ${msg}`);
-    } finally {
-      setSubmittingForReview(false);
-    }
-  };
+    },
+    [user?.email, chat?.id, formDraft, onFormStateChange, pushLocalCustomerRequestSuggestion, getActiveSessionId]
+  );
 
   const pushFlowMessageFromResponse = (res) => {
-    addMessage({
-      sender: "bot",
-      role: "assistant",
-      text: res?.reply || "",
-      flowType: res?.flowType || null,
-      step: res?.step || null,
-      question: res?.question || null,
-      options: res?.options || [],
-      inputType: res?.inputType || null,
-    });
+    const flowMsg = buildCustomerFlowMessageFromResponse(res);
+    if (!flowMsg) return false;
+    addMessage(flowMsg);
+    return true;
   };
 
   const handleStartNewCustomerRequest = async () => {
     if (isStartingCustomerRequest || isTyping) return;
 
     try {
-      const currentChatId = chat?.id || chatIdRef.current;
+      const currentChatId = getActiveSessionId();
       if (!currentChatId || !user?.email) return;
 
       setIsStartingCustomerRequest(true);
@@ -2230,12 +4772,12 @@ const ChatWindow = ({
 
       const workingSessionId = await adoptSessionFromResponse(res, currentChatId);
 
-      if (res?.flowType === "customer_request") {
-        pushFlowMessageFromResponse({
-          ...res,
-          sessionId: workingSessionId,
-        });
-      } else {
+      const didPushFlow = pushFlowMessageFromResponse({
+        ...res,
+        sessionId: workingSessionId,
+      });
+
+      if (!didPushFlow) {
         addMessage({
           sender: "bot",
           role: "assistant",
@@ -2262,7 +4804,7 @@ const ChatWindow = ({
 
   const continueFlowWithValue = async (value) => {
     try {
-      const currentChatId = chat?.id || chatIdRef.current;
+      const currentChatId = getActiveSessionId();
       if (!currentChatId || !user?.email) return;
 
       setIsTyping(true);
@@ -2286,16 +4828,21 @@ const ChatWindow = ({
 
       const workingSessionId = await adoptSessionFromResponse(res, currentChatId);
 
-      if (res?.flowType === "customer_request") {
-        pushFlowMessageFromResponse({
-          ...res,
-          sessionId: workingSessionId,
-        });
+      const didPushFlow = pushFlowMessageFromResponse({
+        ...res,
+        sessionId: workingSessionId,
+      });
+
+      if (didPushFlow) {
         return;
       }
 
       if (res?.formState) {
-        const hydrated = buildCustomerRequestFormDraft(res.formState);
+        const hydrated = buildCustomerRequestFormDraft({
+          ...res.formState,
+          RequestId:
+            res?.formState?.RequestId || res?.requestId || res?.RequestId || "",
+        });
 
         addMessage({
           sender: "bot",
@@ -2303,8 +4850,18 @@ const ChatWindow = ({
           text: res?.reply || "I have prepared the customer request form.",
         });
 
+        pushLocalCustomerRequestSuggestion({
+          sessionId: workingSessionId,
+          requestId: hydrated?.RequestId || res?.requestId || "",
+          customerName: hydrated?.CustomerName || "",
+          customerPartName: hydrated?.CustomerPartName || "",
+          customerPartNumber: hydrated?.CustomerPartNumber || "",
+          requestStatus: "REQUEST-CREATE",
+        });
+
         openFormInline(hydrated, { afterNextMessage: true });
         onFormStateChange?.(workingSessionId, hydrated);
+        await refreshSidebar?.();
         return;
       }
 
@@ -2355,16 +4912,35 @@ const ChatWindow = ({
             ? m.content[0].text
             : "");
 
-        const existingDraft =
-          m.emailDraft ||
-          (sender === "bot" && looksLikeEmailDraft(text)
-            ? parseEmailDraftFromText(text, user?.email || "")
-            : null);
+        const existingDraft = normalizeEmailDraft(
+          m,
+          text,
+          getPreferredCustomerEmail(m)
+        );
 
         if (existingDraft && idx === prev.length - 1) {
           return {
             ...m,
-            emailDraft: draft,
+            emailDraft: {
+              ...draft,
+              to: draft?.to || existingDraft?.to || getPreferredCustomerEmail(m),
+              from: draft?.from || existingDraft?.from || CUSTOMER_REQUEST_FROM_EMAIL,
+              isSupplierEmail:
+                Boolean(draft?.isSupplierEmail) ||
+                Boolean(existingDraft?.isSupplierEmail),
+              kind:
+                draft?.kind ||
+                existingDraft?.kind ||
+                (draft?.isSupplierEmail || existingDraft?.isSupplierEmail
+                  ? "supplier_fmd_request"
+                  : "customer_request_email"),
+              emailKind:
+                draft?.emailKind ||
+                existingDraft?.emailKind ||
+                (draft?.isSupplierEmail || existingDraft?.isSupplierEmail
+                  ? "supplier_fmd_request"
+                  : "customer_request_email"),
+            },
           };
         }
         return m;
@@ -2375,8 +4951,38 @@ const ChatWindow = ({
   const handleSendEmailDraft = async (draft) => {
     try {
       const to = String(draft?.to || "").trim();
-      const subject = String(draft?.subject || "").trim();
-      const body = String(draft?.body || "").trim();
+      const workingSessionId = getActiveSessionId();
+      const isSupplierDraft =
+        Boolean(draft?.isSupplierEmail) || isSupplierEmailDraft(draft);
+
+      const lockedDraft = isSupplierDraft
+        ? draft
+        : lockEmailDraftToSession(draft, workingSessionId, formDraft);
+
+      const subject = String(lockedDraft?.subject || "").trim();
+      const originalBody = String(lockedDraft?.body || draft?.body || "").trim();
+      const requestId =
+        extractRequestIdFromSessionId(workingSessionId) || formDraft?.RequestId || "";
+
+      const customerPart = `${formDraft?.CustomerPartNumber || extractPartNumberFromSessionId(workingSessionId) || ""}#${formDraft?.CustomerPartName || extractPartNameFromSessionId(workingSessionId) || ""}`.replace(/^#|#$/g, "");
+
+      const compactEmailBody = isSupplierDraft
+        ? ""
+        : buildCompactCustomerEmailBody({
+            requestId,
+            customerName: formDraft?.CustomerName || "",
+            customerPart,
+            requestName: formDraft?.RequestName || formDraft?.title || "Customer Request",
+            requestDescription: formDraft?.RequestDescription || originalBody || "",
+            requestType: formDraft?.RequestType || "",
+            requestPriority: formDraft?.RequestPriority || "Medium",
+            requestCompletionDateTime:
+              formDraft?.RequestCompletionDateTime || formDraft?.RequestCompletionDate || "",
+            engineeringContactEmailId: user?.email || "",
+          });
+
+      const body = isSupplierDraft ? originalBody : compactEmailBody || originalBody;
+      const confirmationMarkdown = body;
 
       if (!to) {
         addMessage({
@@ -2406,24 +5012,57 @@ const ChatWindow = ({
       }
 
       const token = await getAccessToken();
-      const workingSessionId = chatIdRef.current || chat?.id || "default-chat";
 
       const res = await sendCustomerEmail(
         {
           sessionId: workingSessionId,
           userId: user?.email,
           to,
+          from: lockedDraft?.from || CUSTOMER_REQUEST_FROM_EMAIL,
           subject,
           body,
+          requestId,
+          RequestConfirmationEmail: confirmationMarkdown,
+          emailKind: isSupplierDraft ? "supplier_fmd_request" : "customer_request_email",
+          isSupplierEmail: isSupplierDraft,
         },
         token
       );
 
+      const emailStatus = isSupplierDraft
+        ? normalizeWorkflowStatus("ASSESSMENT-INPROGRESS")
+        : getWorkflowStatusFromApiResponse(res) || normalizeWorkflowStatus("REQUEST-REVIEW");
+
+      if (emailStatus) {
+        setCurrentRequestStatusOverride(emailStatus);
+      }
+
       addMessage({
         sender: "bot",
         role: "assistant",
-        text: res?.reply || `✅ Email sent successfully to ${to}`,
+        text:
+          res?.reply ||
+          (isSupplierDraft
+            ? `✅ Supplier email sent successfully to ${to}.`
+            : `✅ Email sent successfully to ${to}. Status moved to REQUEST-REVIEW.`),
+        RequestStatus: emailStatus,
+        requestStatus: emailStatus,
       });
+
+      if (!isSupplierDraft) {
+        pushLocalCustomerRequestSuggestion({
+          sessionId: res?.sessionId || workingSessionId,
+          requestId: res?.requestId || formDraft?.RequestId || "",
+          customerName: formDraft?.CustomerName || "",
+          customerPartName: formDraft?.CustomerPartName || "",
+          customerPartNumber: formDraft?.CustomerPartNumber || "",
+          requestStatus: emailStatus,
+        });
+
+        await refreshActiveRequestStatus();
+      }
+
+      await refreshSidebar?.();
     } catch (e) {
       console.error("Send email failed:", e);
       addMessage({
@@ -2432,6 +5071,445 @@ const ChatWindow = ({
         text: `❌ ${e?.message || "Failed to send email"}`,
       });
     }
+  };
+
+  const handleProcessCustomerReply = async () => {
+    try {
+      const emailSubject = String(customerReplySubject || "").trim();
+      const emailBody = String(customerReplyBody || "").trim();
+
+      if (!emailSubject && !emailBody) {
+        return;
+      }
+
+      setProcessingCustomerReply(true);
+
+      const token = await getAccessToken();
+      const workingSessionId = getActiveSessionId();
+
+      const res = await processCustomerReply(
+        {
+          sessionId: workingSessionId,
+          userId: user?.email,
+          emailSubject,
+          emailBody,
+        },
+        token
+      );
+
+      const replyStatus =
+        getWorkflowStatusFromApiResponse(res) ||
+        normalizeWorkflowStatus(res?.confirmed ? "REQUEST-CONFIRMED" : "REQUEST-REVIEW");
+      setCurrentRequestStatusOverride(replyStatus);
+
+      addMessage({
+        sender: "bot",
+        role: "assistant",
+        text:
+          res?.reply ||
+          (res?.confirmed
+            ? "✅ Customer reply processed. Status moved to REQUEST-CONFIRMED."
+            : "ℹ️ Customer reply processed, but it was not classified as confirmation."),
+        RequestStatus: replyStatus,
+        requestStatus: replyStatus,
+      });
+
+      pushLocalCustomerRequestSuggestion({
+        sessionId: res?.sessionId || workingSessionId,
+        requestId: res?.requestId || formDraft?.RequestId || "",
+        customerName: formDraft?.CustomerName || "",
+        customerPartName: formDraft?.CustomerPartName || "",
+        customerPartNumber: formDraft?.CustomerPartNumber || "",
+        requestStatus: replyStatus,
+      });
+
+      await refreshSidebar?.();
+      await refreshActiveRequestStatus();
+      window.setTimeout(() => refreshActiveRequestStatus(), 2500);
+      window.setTimeout(() => refreshActiveRequestStatus(), 6000);
+
+      setShowCustomerReplyModal(false);
+      setCustomerReplySubject("");
+      setCustomerReplyBody("");
+    } catch (e) {
+      console.error("Process customer reply failed:", e);
+      addMessage({
+        sender: "bot",
+        role: "assistant",
+        text: `❌ ${e?.message || "Failed to process customer reply"}`,
+      });
+    } finally {
+      setProcessingCustomerReply(false);
+    }
+  };
+
+  const handleSubmitEmailReviewForAssessment = async () => {
+    try {
+      const workingSessionId = getActiveSessionId();
+      if (!workingSessionId || !user?.email) return;
+
+      const replyInfo = extractCustomerEmailReplyFromMessages(normalizedMessages);
+      const emailSubject = replyInfo.subject || "Customer email reply";
+      const emailBody = replyInfo.body || "Customer reply reviewed and approved by engineer.";
+
+      setSubmittingEmailReview(true);
+
+      const token = await getAccessToken();
+      const res = await processCustomerReply(
+        {
+          sessionId: workingSessionId,
+          userId: user?.email,
+          emailSubject,
+          emailBody,
+          action: "SUBMIT_FOR_ASSESSMENT",
+          askType: "EMAIL REVIEW",
+        },
+        token
+      );
+
+      const assessmentSubmitStatus =
+        getWorkflowStatusFromApiResponse(res) || normalizeWorkflowStatus("REQUEST-CONFIRMED");
+      setCurrentRequestStatusOverride(assessmentSubmitStatus);
+
+      addMessage({
+        sender: "bot",
+        role: "assistant",
+        text:
+          res?.reply ||
+          "✅ Email review completed. Request submitted for assessment and status moved to REQUEST-CONFIRMED.",
+        RequestStatus: assessmentSubmitStatus,
+        requestStatus: assessmentSubmitStatus,
+      });
+
+      pushLocalCustomerRequestSuggestion({
+        sessionId: res?.sessionId || workingSessionId,
+        requestId: res?.requestId || extractRequestIdFromSessionId(workingSessionId),
+        customerName: formDraft?.CustomerName || "",
+        customerPartName:
+          formDraft?.CustomerPartName || extractPartNameFromSessionId(workingSessionId),
+        customerPartNumber:
+          formDraft?.CustomerPartNumber || extractPartNumberFromSessionId(workingSessionId),
+        requestStatus: assessmentSubmitStatus,
+      });
+
+      await refreshSidebar?.();
+      await refreshActiveRequestStatus();
+      window.setTimeout(() => refreshActiveRequestStatus(), 2500);
+      window.setTimeout(() => refreshActiveRequestStatus(), 6000);
+    } catch (e) {
+      console.error("Submit for assessment failed:", e);
+      addMessage({
+        sender: "bot",
+        role: "assistant",
+        text: `❌ ${e?.message || "Failed to submit request for assessment"}`,
+      });
+    } finally {
+      setSubmittingEmailReview(false);
+    }
+  };
+
+  const buildRequestChangeDraftFromItem = (item = {}, workingSessionId = "") => {
+    const requestDetail =
+      item?.RequestDetail ||
+      item?.RequestDetails ||
+      item?.requestDetail ||
+      item?.requestDetails ||
+      {};
+
+    const customerDetail =
+      item?.CustomerDetail ||
+      item?.CustomerDetails ||
+      item?.customerDetail ||
+      item?.customerDetails ||
+      {};
+
+    const customerPartRaw = String(
+      item?.CustomerPart || item?.customerPart || item?.customerPartKey || ""
+    ).trim();
+
+    const customerPartPieces = customerPartRaw.split("#");
+    const customerPartNumberFromRaw = customerPartPieces[0] || "";
+    const customerPartNameFromRaw = customerPartPieces.slice(1).join("#") || "";
+
+    const activeRequestId = extractRequestIdFromSessionId(workingSessionId);
+
+    return buildCustomerRequestFormDraft({
+      ...(hasValidFormState(formState) ? formState : {}),
+      ...(formDraft || {}),
+      ...(item || {}),
+
+      RequestId:
+        item?.RequestId ||
+        item?.requestId ||
+        formDraft?.RequestId ||
+        formState?.RequestId ||
+        activeRequestId ||
+        "",
+
+      SessionId: workingSessionId,
+
+      CustomerName:
+        item?.CustomerName ||
+        item?.customerName ||
+        customerDetail?.CustomerName ||
+        formDraft?.CustomerName ||
+        formState?.CustomerName ||
+        "",
+
+      CustomerPartName:
+        item?.CustomerPartName ||
+        item?.customerPartName ||
+        customerDetail?.CustomerPartName ||
+        customerPartNameFromRaw ||
+        formDraft?.CustomerPartName ||
+        formState?.CustomerPartName ||
+        extractPartNameFromSessionId(workingSessionId) ||
+        "",
+
+      CustomerPartNumber:
+        item?.CustomerPartNumber ||
+        item?.customerPartNumber ||
+        customerDetail?.CustomerPartNumber ||
+        customerPartNumberFromRaw ||
+        formDraft?.CustomerPartNumber ||
+        formState?.CustomerPartNumber ||
+        extractPartNumberFromSessionId(workingSessionId) ||
+        "",
+
+      RequestName:
+        item?.RequestName ||
+        item?.requestName ||
+        requestDetail?.RequestName ||
+        formDraft?.RequestName ||
+        formState?.RequestName ||
+        "Customer Request",
+
+      RequestType:
+        item?.RequestType ||
+        item?.requestType ||
+        requestDetail?.RequestType ||
+        formDraft?.RequestType ||
+        formState?.RequestType ||
+        "",
+
+      RequestDescription:
+        item?.RequestDescription ||
+        item?.requestDescription ||
+        requestDetail?.RequestDescription ||
+        requestDetail?.RequestorContent ||
+        formDraft?.RequestDescription ||
+        formState?.RequestDescription ||
+        "",
+
+      RequestCompletionDateTime:
+        item?.RequestCompletionDateTime ||
+        item?.requestCompletionDateTime ||
+        requestDetail?.RequestCompletionDateTime ||
+        requestDetail?.RequestCompletionDate ||
+        formDraft?.RequestCompletionDateTime ||
+        formDraft?.RequestCompletionDate ||
+        formState?.RequestCompletionDateTime ||
+        formState?.RequestCompletionDate ||
+        "",
+
+      RequestCompletionDate:
+        item?.RequestCompletionDate ||
+        item?.requestCompletionDate ||
+        requestDetail?.RequestCompletionDate ||
+        requestDetail?.RequestCompletionDateTime ||
+        formDraft?.RequestCompletionDate ||
+        formDraft?.RequestCompletionDateTime ||
+        formState?.RequestCompletionDate ||
+        formState?.RequestCompletionDateTime ||
+        "",
+
+      RequestPriority:
+        item?.RequestPriority ||
+        item?.requestPriority ||
+        requestDetail?.RequestPriority ||
+        formDraft?.RequestPriority ||
+        formState?.RequestPriority ||
+        "Medium",
+
+      RequestorMethod:
+        item?.RequestorMethod ||
+        item?.requestorMethod ||
+        requestDetail?.RequestorMethod ||
+        formDraft?.RequestorMethod ||
+        formState?.RequestorMethod ||
+        "EMAIL",
+
+      RequestorContent:
+        item?.RequestorContent ||
+        item?.requestorContent ||
+        requestDetail?.RequestorContent ||
+        requestDetail?.RequestDescription ||
+        formDraft?.RequestorContent ||
+        formDraft?.RequestDescription ||
+        formState?.RequestorContent ||
+        formState?.RequestDescription ||
+        "",
+
+      RequestConfirmationEmail:
+        item?.RequestConfirmationEmail ||
+        item?.requestConfirmationEmail ||
+        requestDetail?.RequestConfirmationEmail ||
+        formDraft?.RequestConfirmationEmail ||
+        formState?.RequestConfirmationEmail ||
+        "",
+
+      CustomerEmail:
+        item?.CustomerEmail ||
+        item?.customerEmail ||
+        item?.CustomerContactEmailId ||
+        item?.customerContactEmailId ||
+        customerDetail?.CustomerContactEmailId ||
+        customerDetail?.CustomerContactEmail ||
+        formDraft?.CustomerEmail ||
+        formDraft?.CustomerContactEmailId ||
+        formState?.CustomerEmail ||
+        formState?.CustomerContactEmailId ||
+        "",
+
+      CustomerContactEmailId:
+        item?.CustomerContactEmailId ||
+        item?.customerContactEmailId ||
+        customerDetail?.CustomerContactEmailId ||
+        customerDetail?.CustomerContactEmail ||
+        formDraft?.CustomerContactEmailId ||
+        formDraft?.CustomerEmail ||
+        formState?.CustomerContactEmailId ||
+        formState?.CustomerEmail ||
+        "",
+
+      NotifyCustomer: true,
+      EmailFrom: CUSTOMER_REQUEST_FROM_EMAIL,
+    });
+  };
+
+  const handleRequestChangesFromEmailReview = async () => {
+    const workingSessionId = getActiveSessionId();
+    const activeRequestId = extractRequestIdFromSessionId(workingSessionId);
+
+    if (!workingSessionId || !activeRequestId || !user?.email) {
+      addMessage({
+        sender: "bot",
+        role: "assistant",
+        text: "❌ Unable to open request changes because the active request could not be resolved.",
+      });
+      return;
+    }
+
+    const replyInfo = extractCustomerEmailReplyFromMessages(normalizedMessages);
+    const emailSubject = replyInfo.subject || "Customer email reply";
+    const emailBody = replyInfo.body || "Customer requested changes before assessment.";
+
+    let backendReply = "";
+    let backendStatus = "EMAIL-REVIEW";
+    let matchedRequestItem = null;
+
+    try {
+      setSubmittingEmailReview(true);
+
+      const token = await getAccessToken();
+
+      const res = await processCustomerReply(
+        {
+          sessionId: workingSessionId,
+          userId: user?.email,
+          emailSubject,
+          emailBody,
+          action: "REQUEST_CHANGES",
+          askType: "EMAIL REVIEW",
+          changeReason:
+            emailBody ||
+            "Customer requested changes before assessment. Engineer will update the request and resend a revised email.",
+        },
+        token
+      );
+
+      backendReply = res?.reply || "";
+      backendStatus =
+        getWorkflowStatusFromApiResponse(res) || normalizeWorkflowStatus("EMAIL-REVIEW");
+
+      const searchRes = await searchCustomerRequests(token, activeRequestId, "ALL");
+      const items = Array.isArray(searchRes?.items)
+        ? searchRes.items
+        : Array.isArray(searchRes?.Items)
+        ? searchRes.Items
+        : [];
+
+      matchedRequestItem =
+        items.find((item) => {
+          const itemSessionId = String(item?.sessionId || item?.SessionId || "").trim();
+          const itemRequestId = String(item?.requestId || item?.RequestId || "").trim();
+
+          return (
+            itemRequestId === activeRequestId ||
+            extractRequestIdFromSessionId(itemSessionId) === activeRequestId ||
+            itemSessionId.includes(activeRequestId)
+          );
+        }) || items[0] || null;
+
+      setCurrentRequestStatusOverride(backendStatus);
+    } catch (e) {
+      console.error("Request changes action failed, opening local edit form:", e);
+      backendReply = `⚠️ Request changes form opened locally, but backend change-request update failed: ${
+        e?.message || "Unknown error"
+      }`;
+      backendStatus = normalizeWorkflowStatus("EMAIL-REVIEW");
+      setCurrentRequestStatusOverride(backendStatus);
+    } finally {
+      setSubmittingEmailReview(false);
+    }
+
+    const nextDraft = buildRequestChangeDraftFromItem(
+      matchedRequestItem || {},
+      workingSessionId
+    );
+
+    addMessage({
+      sender: "bot",
+      role: "assistant",
+      text:
+        "I have prepared the customer request form. Please review and save.\n\n" +
+        (backendReply ||
+          "📝 Request changes selected. Update the request details/date/priority, then generate a revised email for the customer."),
+      RequestStatus: backendStatus,
+      requestStatus: backendStatus,
+    });
+
+    // Force the existing customer request form to render directly after the new
+    // request-changes message. Without this, the persisted-form insert logic can
+    // place the form near the old original form higher in the chat history.
+    setShowForm(true);
+    setFormDraft(nextDraft);
+    setFormInsertIndex(visibleMessageCountRef.current + 1);
+    setFormSaveMsg(
+      "Update the request changes, then generate and send a revised customer email."
+    );
+
+    setTimeout(() => {
+      if (scrollRef.current) {
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      }
+    }, 80);
+
+    onFormStateChange?.(workingSessionId, nextDraft);
+
+    pushLocalCustomerRequestSuggestion({
+      sessionId: workingSessionId,
+      requestId: activeRequestId,
+      customerName: nextDraft?.CustomerName || "",
+      customerPartName:
+        nextDraft?.CustomerPartName || extractPartNameFromSessionId(workingSessionId),
+      customerPartNumber:
+        nextDraft?.CustomerPartNumber || extractPartNumberFromSessionId(workingSessionId),
+      requestStatus: backendStatus,
+    });
+
+    await refreshSidebar?.();
+    await refreshActiveRequestStatus();
   };
 
   const handleSend = async () => {
@@ -2470,7 +5548,7 @@ const ChatWindow = ({
         attachments: pendingAttachments,
       });
 
-      const currentChatId = chat?.id || chatIdRef.current;
+      const currentChatId = getActiveSessionId();
       if (!currentChatId) throw new Error("No active sessionId");
       chatIdRef.current = currentChatId;
 
@@ -2485,19 +5563,28 @@ const ChatWindow = ({
 
       const workingSessionId = await adoptSessionFromResponse(res, currentChatId);
 
-      if (res?.flowType === "customer_request") {
-        pushFlowMessageFromResponse(res);
+      const didPushFlow = pushFlowMessageFromResponse({
+        ...res,
+        sessionId: workingSessionId,
+      });
+
+      if (didPushFlow) {
         setPendingAttachments([]);
         return;
       }
 
-      let artifact = res?.artifact || null;
-      let replyText = res?.reply || "";
+      let artifact = res?.artifact || res?.Artifact || res?.payload?.artifact || null;
+      let replyText = getBackendReplyText(res);
 
       if (!artifact) {
         const parsed = tryParseArtifact(replyText);
         artifact = parsed.artifact || null;
         replyText = parsed.replyText || "";
+      }
+
+      if (!replyText && isStatusRequestText(typedText)) {
+        replyText =
+          "⚠️ Status data was processed by backend, but the frontend could not read the reply text. Please check the /chat Network response shape.";
       }
 
       addMessage({
@@ -2507,8 +5594,18 @@ const ChatWindow = ({
         artifact,
       });
 
+      setTimeout(() => {
+        if (scrollRef.current) {
+          scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+        }
+      }, 80);
+
       if (res?.formState) {
-        const hydrated = buildCustomerRequestFormDraft(res.formState);
+        const hydrated = buildCustomerRequestFormDraft({
+          ...res.formState,
+          RequestId:
+            res?.formState?.RequestId || res?.requestId || res?.RequestId || "",
+        });
         openFormInline(hydrated, { afterNextMessage: true });
         onFormStateChange?.(workingSessionId, hydrated);
       } else if (wantsForm) {
@@ -2556,7 +5653,35 @@ const ChatWindow = ({
     (!cleanedMessages || cleanedMessages.length === 0);
 
   const showInlineCustomerStarter =
-    isCustomerRequestStarterSession && !showForm;
+    isCustomerRequestStarterSession &&
+    !showForm &&
+    !hasActiveCustomerFlow &&
+    !hasVisibleCustomerFlowCard &&
+    normalizedMessages.length === 0;
+
+  // Manual customer reply process is disabled. Customer replies should come
+  // only from the mailbox poller / EMAIL-REVIEW workflow.
+  const canShowProcessReplyButton = false;
+
+  const emailReviewReplyInfo = useMemo(
+    () => extractCustomerEmailReplyFromMessages(normalizedMessages),
+    [normalizedMessages]
+  );
+
+  const canShowEmailReviewActionCard = useMemo(() => {
+    if (!hasEmailReviewSignal(normalizedMessages)) return false;
+
+    const alreadySubmitted = normalizedMessages.some((m) => {
+      const text = String(m?.text || "").toLowerCase();
+      return (
+        text.includes("request-confirmed") ||
+        text.includes("submitted for assessment") ||
+        text.includes("email review completed")
+      );
+    });
+
+    return !alreadySubmitted;
+  }, [normalizedMessages]);
 
   const renderFormMessageRow = (key) => (
     <div key={key} className="msg-row bot">
@@ -2569,21 +5694,26 @@ const ChatWindow = ({
             );
           }}
           onSave={handleSaveForm}
-          onSubmitForReview={handleSubmitForReview}
+          onGenerateEmailDraft={() => handleGenerateEmailDraftFromForm()}
+          onNotifyCustomerSelected={(nextDraft) =>
+            handleGenerateEmailDraftFromForm(nextDraft, { silentPrompt: false })
+          }
           saving={savingForm}
-          submittingForReview={submittingForReview}
+          generatingEmailDraft={generatingEmailDraft}
           saveMsg={formSaveMsg}
         />
       </div>
     </div>
   );
 
-  const shouldRenderFormAtTop = showForm && formDraft && formInsertIndex === 0;
+  const shouldRenderFormAtTop =
+    showForm && formDraft && computedFormInsertIndex === 0;
 
   const shouldRenderFormAtEnd =
     showForm &&
     formDraft &&
-    (formInsertIndex === null || formInsertIndex >= normalizedMessages.length);
+    (computedFormInsertIndex === null ||
+      computedFormInsertIndex >= normalizedMessages.length);
 
   return (
     <main className="chat-main chat-layout">
@@ -2596,10 +5726,18 @@ const ChatWindow = ({
         />
       )}
 
+
       {showIdleWarning && (
         <div className="idle-warning-banner">
           ⚠️ You’ll be logged out in <strong>{idleSecondsLeft}</strong> seconds
         </div>
+      )}
+
+      {shouldShowWorkflowFulfillmentBar && !isRequestMonitoringSession && (
+        <WorkflowFulfillmentBar
+          requestStatus={currentRequestStatus}
+          workflowSections={workflowSections}
+        />
       )}
 
       <div
@@ -2620,7 +5758,7 @@ const ChatWindow = ({
               <div className="msg-row bot">
                 <div className="msg-bubble msg-bubble-inline-card">
                   <InlineCustomerRequestStarterCard
-                    suggestions={liveCustomerRequestSuggestions}
+                    suggestions={mergedCustomerRequestSuggestions}
                     onOpenExistingCustomerRequest={onOpenExistingCustomerRequest}
                     onStartNewCustomerRequest={handleStartNewCustomerRequest}
                     disableStartNew={isStartingCustomerRequest || isTyping}
@@ -2635,21 +5773,31 @@ const ChatWindow = ({
 
             {shouldRenderFormAtTop && renderFormMessageRow("inline-form-top")}
 
-            {normalizedMessages.map((m, index) => (
-              <React.Fragment key={m.id || index}>
-                {showForm &&
-                  formDraft &&
-                  formInsertIndex === index &&
-                  renderFormMessageRow(`inline-form-before-${index}`)}
+            {normalizedMessages.map((m, index) => {
+              const workflowAnchorId = isRequestMonitoringSession
+                ? null
+                : workflowAnchorIdsByMessageIndex[index];
 
-                <div className={`msg-row ${m.sender}`}>
-                  <div className="msg-bubble">
+              return (
+                <React.Fragment key={m.id || index}>
+                  {showForm &&
+                    formDraft &&
+                    computedFormInsertIndex === index &&
+                    renderFormMessageRow(`inline-form-before-${index}`)}
+
+                  <div
+                    id={workflowAnchorId || undefined}
+                    className={`msg-row ${m.sender}`}
+                  >
+                    <div className="msg-bubble">
                     {m.flowType === "customer_request" ? (
                       <CustomerRequestStepCard
                         message={m}
                         onSelectOption={handleFlowOptionSelect}
                         onSubmitManualInput={handleManualFlowSubmit}
                       />
+                    ) : m.supplierTask ? (
+                      <SupplierTaskCard task={m.supplierTask} />
                     ) : m.emailDraft ? (
                       <EmailDraftCard
                         draft={m.emailDraft}
@@ -2662,12 +5810,13 @@ const ChatWindow = ({
                         onRequestRowClick={handleRequestRowClick}
                       />
                     )}
-                    {!m.emailDraft && renderArtifact(m)}
+                    {!m.emailDraft && !m.supplierTask && renderArtifact(m)}
                     {renderAttachments(m.attachments)}
+                    </div>
                   </div>
-                </div>
-              </React.Fragment>
-            ))}
+                </React.Fragment>
+              );
+            })}
 
             {normalizedMessages.length === 0 && shouldRenderFormAtEnd
               ? renderFormMessageRow("inline-form-empty-end")
@@ -2676,6 +5825,22 @@ const ChatWindow = ({
             {normalizedMessages.length > 0 && shouldRenderFormAtEnd
               ? renderFormMessageRow("inline-form-end")
               : null}
+
+            {canShowEmailReviewActionCard && (
+              <div className="msg-row bot">
+                <div className="msg-bubble">
+                  <EmailReviewActionCard
+                    replyInfo={emailReviewReplyInfo}
+                    requestId={extractRequestIdFromSessionId(getActiveSessionId())}
+                    assignedTo={user?.email || ""}
+                    onSubmitForAssessment={handleSubmitEmailReviewForAssessment}
+                    onRequestChanges={handleRequestChangesFromEmailReview}
+                    loading={submittingEmailReview}
+                  />
+                </div>
+              </div>
+            )}
+
           </>
         )}
 

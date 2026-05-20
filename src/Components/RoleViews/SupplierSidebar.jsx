@@ -34,14 +34,40 @@ const SupplierSidebar = ({
   };
 
   const getDisplayAndHover = (r) => {
-    const sid = String(r?.sessionId || "");
-    const parts = sid.split("#").filter(Boolean);
+    const sid = String(r?.sessionId || "").trim();
+    const title = String(
+      r?.displaySessionId ||
+        r?.title ||
+        r?.taskName ||
+        r?.customerPartName ||
+        r?.customerPart ||
+        sid
+    ).trim();
 
-    const display = parts[0] || r?.title || sid;
-    const hoverExtra = parts.length > 1 ? "#" + parts.slice(1).join("#") : "";
-    const hover = hoverExtra || r?.title || sid;
+    const taskId = String(r?.taskId || sid).trim();
+    const partNumber = String(r?.customerPartNumber || "").trim();
+    const partName = String(r?.customerPartName || "").trim();
+    const status = String(r?.taskStatus || r?.status || "").trim();
 
-    return { display, hover };
+    let display = title || taskId || sid;
+
+    // Keep sidebar readable.
+    if (display.length > 34) {
+      display = `${display.slice(0, 31)}...`;
+    }
+
+    const hoverParts = [
+      title,
+      taskId ? `Task ID: ${taskId}` : "",
+      status ? `Status: ${status}` : "",
+      partNumber ? `Part No: ${partNumber}` : "",
+      partName ? `Part Name: ${partName}` : "",
+    ].filter(Boolean);
+
+    return {
+      display,
+      hover: hoverParts.join("\n") || sid,
+    };
   };
 
   const supplierTaskList = useMemo(() => {
@@ -71,14 +97,18 @@ const SupplierSidebar = ({
       <div className="role-list">
         {supplierTaskList.map((r) => {
           const { display, hover } = getDisplayAndHover(r);
+          const sessionId = String(r?.sessionId || r?.taskId || "").trim();
 
           return (
             <button
-              key={r.sessionId}
+              key={sessionId}
               className={`role-list-item ${
-                activeId === r.sessionId ? "active" : ""
+                activeId === sessionId ? "active" : ""
               }`}
-              onClick={() => onSelectRequest?.(r.sessionId)}
+              onClick={() => {
+                if (!sessionId) return;
+                onSelectRequest?.(sessionId);
+              }}
               title={hover}
               type="button"
             >

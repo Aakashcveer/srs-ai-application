@@ -1,0 +1,317 @@
+.workflow-fulfillment-wrapper {
+  position: fixed;
+  right: 22px;
+  top: 96px;
+  bottom: 88px;
+  width: 72px;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+/* Apple Liquid Glass style — quiet, premium, minimal */
+.workflow-fulfillment-card {
+  position: relative;
+  width: 36px;
+  height: 100%;
+  min-height: 560px;
+  max-height: 800px;
+  padding: 42px 0 30px;
+  border-radius: 999px;
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.78),
+      rgba(248, 250, 252, 0.56)
+    );
+  border: 1px solid rgba(229, 231, 235, 0.82);
+  box-shadow:
+    0 22px 54px rgba(17, 24, 39, 0.055),
+    0 4px 14px rgba(17, 24, 39, 0.035),
+    inset 0 1px 0 rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(28px) saturate(1.08);
+  -webkit-backdrop-filter: blur(28px) saturate(1.08);
+  pointer-events: auto;
+  overflow: visible;
+}
+
+.workflow-fulfillment-card::before {
+  content: "";
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  width: 16px;
+  height: 3px;
+  border-radius: 999px;
+  transform: translateX(-50%);
+  background: rgba(142, 142, 147, 0.24);
+}
+
+.workflow-current-pill,
+.workflow-current-dot {
+  display: none !important;
+}
+
+/* Very thin Apple neutral track */
+.workflow-track {
+  position: relative;
+  width: 1.5px;
+  height: 100%;
+  margin: 0 auto;
+  border-radius: 999px;
+  background: rgba(209, 213, 219, 0.54);
+  box-shadow:
+    inset 0 1px 1px rgba(17, 24, 39, 0.03),
+    0 0 0 1px rgba(255, 255, 255, 0.72);
+}
+
+/* Soft system-blue progress line */
+.workflow-track-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1.5px;
+  border-radius: 999px;
+  background:
+    linear-gradient(
+      180deg,
+      rgba(10, 132, 255, 0.68),
+      rgba(0, 122, 255, 0.92)
+    );
+  box-shadow: none;
+  transition: height 0.42s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Small, refined milestone nodes */
+.workflow-step-dot {
+  position: absolute;
+  left: 50%;
+  width: 8px;
+  height: 8px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1.3px solid rgba(209, 213, 219, 0.92);
+  background: rgba(255, 255, 255, 0.98);
+  cursor: pointer;
+  outline: none;
+  transform: translate(-50%, -50%);
+  box-shadow:
+    0 2px 8px rgba(17, 24, 39, 0.035),
+    inset 0 1px 0 rgba(255, 255, 255, 0.96);
+  transition:
+    transform 0.18s ease,
+    width 0.18s ease,
+    height 0.18s ease,
+    box-shadow 0.18s ease,
+    background 0.18s ease,
+    border-color 0.18s ease;
+}
+
+/* Completed: small calm Apple blue, not loud */
+.workflow-step-dot.completed {
+  width: 9px;
+  height: 9px;
+  background: #0a84ff;
+  border-color: rgba(10, 132, 255, 0.72);
+  box-shadow:
+    0 0 0 3px rgba(10, 132, 255, 0.065),
+    0 4px 10px rgba(10, 132, 255, 0.08);
+}
+
+/* Current: elegant focus ring */
+.workflow-step-dot.current {
+  width: 18px;
+  height: 18px;
+  background: rgba(255, 255, 255, 0.99);
+  border: 2.5px solid #007aff;
+  box-shadow:
+    0 0 0 4px rgba(0, 122, 255, 0.09),
+    0 10px 22px rgba(0, 122, 255, 0.12);
+}
+
+.workflow-step-dot.current::before {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-radius: 999px;
+  background: #007aff;
+}
+
+.workflow-step-dot.current::after {
+  content: "";
+  position: absolute;
+  inset: -7px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 122, 255, 0.13);
+  animation: workflowPulse 2.35s ease-out infinite;
+}
+
+/* Pending: quiet white/gray */
+.workflow-step-dot.pending {
+  background: rgba(255, 255, 255, 0.98);
+  border-color: rgba(209, 213, 219, 0.84);
+  box-shadow:
+    0 2px 8px rgba(17, 24, 39, 0.035),
+    inset 0 1px 0 rgba(255, 255, 255, 0.96);
+}
+
+.workflow-step-dot:hover {
+  transform: translate(-50%, -50%) scale(1.14);
+}
+
+.workflow-step-dot:focus-visible {
+  box-shadow:
+    0 0 0 5px rgba(0, 122, 255, 0.11),
+    0 8px 18px rgba(0, 122, 255, 0.11);
+}
+
+/* Light frosted Apple tooltip */
+.workflow-tooltip {
+  position: absolute;
+  right: 30px;
+  top: 50%;
+  min-width: 190px;
+  max-width: 280px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.94),
+      rgba(242, 242, 247, 0.88)
+    );
+  border: 1px solid rgba(229, 231, 235, 0.82);
+  color: #1d1d1f;
+  text-align: left;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(-50%) translateX(7px);
+  box-shadow:
+    0 18px 42px rgba(17, 24, 39, 0.105),
+    0 4px 12px rgba(17, 24, 39, 0.05),
+    inset 0 1px 0 rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(24px) saturate(1.12);
+  -webkit-backdrop-filter: blur(24px) saturate(1.12);
+  transition:
+    opacity 0.18s ease,
+    visibility 0.18s ease,
+    transform 0.18s ease,
+    right 0.18s ease;
+  z-index: 10;
+}
+
+.workflow-tooltip::after {
+  content: "";
+  position: absolute;
+  right: -6px;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  transform: translateY(-50%) rotate(45deg);
+  background: rgba(242, 242, 247, 0.9);
+  border-right: 1px solid rgba(229, 231, 235, 0.78);
+  border-top: 1px solid rgba(229, 231, 235, 0.78);
+  border-radius: 3px;
+}
+
+.workflow-tooltip strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 11px;
+  line-height: 1.35;
+  font-weight: 760;
+  letter-spacing: -0.01em;
+  color: #1d1d1f;
+  word-break: break-word;
+}
+
+.workflow-tooltip small {
+  display: block;
+  font-size: 10px;
+  line-height: 1.45;
+  color: #6e6e73;
+  word-break: break-word;
+}
+
+.workflow-step-dot:hover .workflow-tooltip,
+.workflow-step-dot.current .workflow-tooltip {
+  opacity: 1;
+  visibility: visible;
+  right: 36px;
+  transform: translateY(-50%) translateX(0);
+}
+
+@keyframes workflowPulse {
+  0% {
+    transform: scale(0.76);
+    opacity: 0.28;
+  }
+
+  70% {
+    transform: scale(1.22);
+    opacity: 0;
+  }
+
+  100% {
+    transform: scale(1.22);
+    opacity: 0;
+  }
+}
+
+@media (max-width: 1200px) {
+  .workflow-fulfillment-wrapper {
+    right: 14px;
+    width: 56px;
+  }
+
+  .workflow-fulfillment-card {
+    width: 34px;
+    min-height: 500px;
+  }
+
+  .workflow-tooltip {
+    min-width: 165px;
+    max-width: 230px;
+    right: 28px;
+  }
+
+  .workflow-step-dot:hover .workflow-tooltip,
+  .workflow-step-dot.current .workflow-tooltip {
+    right: 34px;
+  }
+}
+
+@media (max-width: 900px) {
+  .workflow-fulfillment-wrapper {
+    display: none;
+  }
+}
+
+
+
+.workflow-track-fill {
+  background: linear-gradient(
+    180deg,
+    rgba(0, 122, 255, 0.55),
+    rgba(0, 122, 255, 0.78)
+  );
+}
+
+.workflow-step-dot.completed {
+  background: #5ac8fa;
+  border-color: rgba(90, 200, 250, 0.72);
+  box-shadow:
+    0 0 0 3px rgba(90, 200, 250, 0.08),
+    0 4px 10px rgba(90, 200, 250, 0.08);
+}
+
+.workflow-step-dot.current {
+  border-color: #007aff;
+}
+
+.workflow-step-dot.current::before {
+  background: #007aff;
+}

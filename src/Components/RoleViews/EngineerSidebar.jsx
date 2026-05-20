@@ -37,6 +37,48 @@ const EngineerSidebar = ({
     onAgentModeChange?.(checked);
   };
 
+  const normalizeText = (value) => String(value || "").trim().toLowerCase();
+
+  const isCustomerLauncher = (item) => {
+    const title = normalizeText(item?.title);
+    const sessionId = normalizeText(item?.sessionId);
+    const sessionType = normalizeText(item?.sessionType || item?.SessionType);
+
+    return (
+      sessionId === "new customer request" ||
+      (sessionType === "my assistant" && title === "customer request")
+    );
+  };
+
+  const isSupplierLauncher = (item) => {
+    const title = normalizeText(item?.title);
+    const sessionId = normalizeText(item?.sessionId);
+    const sessionType = normalizeText(item?.sessionType || item?.SessionType);
+
+    return (
+      sessionId === "new supplier request" ||
+      (sessionType === "my assistant" && title === "supplier request")
+    );
+  };
+
+  const isMonitoringLauncher = (item) => {
+    const title = normalizeText(item?.title);
+    const sessionId = normalizeText(item?.sessionId);
+
+    return (
+      sessionId === "request monitoring & status" ||
+      title === "request monitoring & status"
+    );
+  };
+
+  const isAssistantLauncher = (item) => {
+    return (
+      isCustomerLauncher(item) ||
+      isSupplierLauncher(item) ||
+      isMonitoringLauncher(item)
+    );
+  };
+
   const buildDisplayFromSessionId = (sessionId, sessionType) => {
     const sid = String(sessionId || "").trim();
     const st = String(sessionType || "").toLowerCase().trim();
@@ -135,41 +177,49 @@ const EngineerSidebar = ({
   };
 
   const myAssistantList = useMemo(() => {
-    return (groupedSessions?.myAssistant || []).filter(Boolean);
+    return (groupedSessions?.myAssistant || []).filter((item) =>
+      isAssistantLauncher(item)
+    );
   }, [groupedSessions]);
 
   const customerRequestList = useMemo(() => {
-    return (groupedSessions?.customerRequest || []).filter(Boolean);
+    return (groupedSessions?.customerRequest || [])
+      .filter((item) => {
+        if (!item) return false;
+        if (isAssistantLauncher(item)) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        const aa = String(a?.lastActivityAt || a?.createdAt || "").trim();
+        const bb = String(b?.lastActivityAt || b?.createdAt || "").trim();
+        return bb.localeCompare(aa);
+      });
   }, [groupedSessions]);
 
   const supplierTaskList = useMemo(() => {
-    return (groupedSessions?.supplierTask || []).filter(Boolean);
+    return (groupedSessions?.supplierTask || [])
+      .filter((item) => {
+        if (!item) return false;
+        if (isAssistantLauncher(item)) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        const aa = String(a?.lastActivityAt || a?.createdAt || "").trim();
+        const bb = String(b?.lastActivityAt || b?.createdAt || "").trim();
+        return bb.localeCompare(aa);
+      });
   }, [groupedSessions]);
 
   const normalizeAssistantKey = (item) => {
-    const title = String(item?.title || "").toLowerCase().trim();
-    const sessionId = String(item?.sessionId || "").toLowerCase().trim();
-
-    if (
-      title.includes("customer request") ||
-      sessionId === "new customer request"
-    ) {
+    if (isCustomerLauncher(item)) {
       return "NEW_CUSTOMER_REQUEST";
     }
 
-    if (
-      title.includes("supplier request") ||
-      title.includes("supplier task") ||
-      sessionId === "new supplier request"
-    ) {
+    if (isSupplierLauncher(item)) {
       return "NEW_SUPPLIER_REQUEST";
     }
 
-    if (
-      title.includes("monitoring") ||
-      title.includes("status") ||
-      sessionId === "request monitoring & status"
-    ) {
+    if (isMonitoringLauncher(item)) {
       return "REQUEST_MONITORING_STATUS";
     }
 

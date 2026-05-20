@@ -4,6 +4,14 @@ import React from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
+import {
+  Mail,
+  Bot,
+  Workflow,
+  CircleCheckBig,
+  BarChart3,
+  FileText,
+} from "lucide-react";
 import "highlight.js/styles/github-dark.css";
 
 const getStatusClass = (value = "") => {
@@ -18,7 +26,6 @@ const getStatusClass = (value = "") => {
 
 const extractPlainText = (children) => {
   if (typeof children === "string") return children.trim();
-
   if (typeof children === "number") return String(children).trim();
 
   if (Array.isArray(children)) {
@@ -45,6 +52,33 @@ const extractPlainText = (children) => {
   return "";
 };
 
+const getHeadingIcon = (headingText = "") => {
+  const text = headingText.toLowerCase();
+
+  if (text.includes("request status")) return <BarChart3 size={20} />;
+  if (text.includes("customer communication")) return <Mail size={18} />;
+  if (text.includes("workflow progress")) return <Workflow size={18} />;
+  if (text.includes("task summary")) return <FileText size={18} />;
+  if (text.includes("ai generated") || text.includes("ai summary")) return <Bot size={18} />;
+  if (text.includes("next recommended") || text.includes("next action")) {
+    return <CircleCheckBig size={18} />;
+  }
+
+  return null;
+};
+
+const renderHeading = (Tag, children, className = "") => {
+  const headingText = extractPlainText(children);
+  const icon = getHeadingIcon(headingText);
+
+  return (
+    <Tag className={`markdown-heading-with-icon ${className}`}>
+      {icon && <span className="markdown-heading-icon">{icon}</span>}
+      <span>{children}</span>
+    </Tag>
+  );
+};
+
 const MarkdownRenderer = ({ text, onRequestRowClick }) => {
   return (
     <div className="markdown-body">
@@ -52,6 +86,18 @@ const MarkdownRenderer = ({ text, onRequestRowClick }) => {
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeHighlight]}
         components={{
+          h1({ children }) {
+            return renderHeading("h1", children, "markdown-h1");
+          },
+
+          h2({ children }) {
+            return renderHeading("h2", children, "markdown-h2");
+          },
+
+          h3({ children }) {
+            return renderHeading("h3", children, "markdown-h3");
+          },
+
           table({ children }) {
             return (
               <div className="table-scroll-wrap">
@@ -63,7 +109,6 @@ const MarkdownRenderer = ({ text, onRequestRowClick }) => {
           tr({ children, ...props }) {
             const cells = React.Children.toArray(children);
 
-            // header rows use th, body rows use td
             const firstChild = cells[0];
             const firstType =
               React.isValidElement(firstChild) && typeof firstChild.type === "string"
