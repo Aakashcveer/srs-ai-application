@@ -717,3 +717,120 @@ body.dark .switch input:checked + .slider {
   font-size: 12px;
   color: #64748b;
 }
+/* Supplier task yellow highlighter effect */
+.role-list-item.supplier-task-highlight {
+  position: relative;
+  overflow: visible;
+  background: transparent;
+  font-weight: 800;
+}
+
+.role-list-item.supplier-task-highlight::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: 50%;
+  height: 16px;
+  transform: translateY(-35%) rotate(-1deg);
+  background: rgba(255, 230, 80, 0.8);
+  border-radius: 6px;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.role-list-item.supplier-task-highlight span {
+  position: relative;
+  z-index: 1;
+  color: #111827;
+}
+
+/* Keep selected item normal after engineer opens it */
+.role-list-item.supplier-task-highlight.active {
+  background: #e5e7eb;
+}
+
+.role-list-item.supplier-task-highlight.active::before {
+  display: none;
+}
+
+
+
+
+/* Yellow highlighter effect for supplier task waiting for engineer review */
+.role-list-item.supplier-task-highlighter {
+  position: relative;
+  overflow: visible;
+  background: transparent !important;
+  font-weight: 900;
+  isolation: isolate;
+}
+
+.role-list-item.supplier-task-highlighter::before {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  top: 50%;
+  height: 18px;
+  transform: translateY(-42%) rotate(-1deg);
+  background: rgba(255, 232, 88, 0.9);
+  border-radius: 6px;
+  box-shadow: 0 2px 0 rgba(255, 210, 30, 0.35);
+  z-index: -1;
+  pointer-events: none;
+}
+
+.role-list-item.supplier-task-highlighter span {
+  position: relative;
+  z-index: 1;
+  color: #0f172a;
+}
+
+/* When engineer opens the task, selected active state should look normal */
+.role-list-item.supplier-task-highlighter.active {
+  background: #e5e7eb !important;
+  box-shadow: none;
+}
+
+.role-list-item.supplier-task-highlighter.active::before {
+  display: none;
+}
+
+.role-list-item.supplier-task-highlighter {
+  position: relative;
+  overflow: visible;
+  background: transparent !important;
+  font-weight: 900;
+  isolation: isolate;
+}
+
+.role-list-item.supplier-task-highlighter::before {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  top: 50%;
+  height: 18px;
+  transform: translateY(-42%) rotate(-1deg);
+  background: rgba(255, 232, 88, 0.9);
+  border-radius: 6px;
+  box-shadow: 0 2px 0 rgba(255, 210, 30, 0.35);
+  z-index: -1;
+  pointer-events: none;
+}
+
+.role-list-item.supplier-task-highlighter span {
+  position: relative;
+  z-index: 1;
+  color: #0f172a;
+}
+
+.role-list-item.supplier-task-highlighter.active {
+  background: #e5e7eb !important;
+  box-shadow: none;
+}
+
+.role-list-item.supplier-task-highlighter.active::before {
+  display: none;
+}

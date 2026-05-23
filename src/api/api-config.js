@@ -6,8 +6,11 @@
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 
 console.log("✅ LOADED api-config.js FROM:", import.meta.url, "TIME:", Date.now());
-console.log("✅ api-config UPDATED VERSION 1023 - CUSTOMER FLOW CLEANUP + COMPACT EMAIL");
+console.log("✅ api-config UPDATED VERSION 1024 - SUPPLIER TASK MULTI FILE UPLOAD");
 
+// ===============================
+// ENDPOINTS
+// ===============================
 export const ENDPOINTS = {
   chat: `${API_BASE_URL}/chat`,
   agentcoreChat: `${API_BASE_URL}/agentcore-chat`,
@@ -31,6 +34,10 @@ export const ENDPOINTS = {
 
   // ✅ FR1
   fileConfirm: `${API_BASE_URL}/file/confirm`,
+
+  // ✅ SUPPLIER TASK FLOW
+  supplierTaskSubmitReview: `${API_BASE_URL}/supplier-task/submit-review`,
+  supplierTaskUpdate: `${API_BASE_URL}/supplier-task/update`,
 
   // ✅ FORM SAVE
   formSave: `${API_BASE_URL}/form`,
@@ -124,9 +131,9 @@ const normalizeCustomerRequestPayload = (payload = {}) => {
   const requestorMethod = asString(
     payload.RequestorMethod || requestDetail.RequestorMethod || "EMAIL"
   );
-  const requestorContent = asString(
-    payload.RequestorContent || requestDetail.RequestorContent || requestDescription
-  ) || requestDescription;
+  const requestorContent =
+    asString(payload.RequestorContent || requestDetail.RequestorContent || requestDescription) ||
+    requestDescription;
   const requestConfirmationEmail = asString(
     payload.RequestConfirmationEmail || requestDetail.RequestConfirmationEmail
   );
@@ -171,8 +178,6 @@ const normalizeCustomerRequestPayload = (payload = {}) => {
 };
 
 // ✅ Build compact customer confirmation email text.
-// Kept as markdown/plain text because backend/email Lambda currently sends body text.
-// This avoids large Gmail spacing caused by heading-heavy markdown and extra blank lines.
 export const buildRequestConfirmationEmailMarkdown = ({
   requestId = "",
   requestLoggedDateTime = "",
@@ -237,7 +242,7 @@ export const buildRequestConfirmationEmailMarkdown = ({
       if (line !== "") return true;
       return arr[index - 1] !== "";
     })
-    .join("");
+    .join("\n");
 };
 
 // ✅ normalize attachments so backend always receives same keys
@@ -406,7 +411,6 @@ export const searchCustomerRequests = async (
     clearTimeout(timer);
   }
 };
-
 
 // ===============================
 // ✅ CUSTOMER REQUEST LIVE STATUS
@@ -800,14 +804,48 @@ export const uploadFilePresigned = async ({ sessionId, userId, file }, token) =>
 
 // ===============================
 // ✅ FR1: FILE CONFIRM
+// Supports normal chat uploads and Supplier/FMD task uploads.
 // ===============================
 export const confirmFileUploadAndType = async (
-  { sessionId, userId, s3Key, fileName, fileType, fileSize, docType },
+  {
+    sessionId,
+    userId,
+    s3Key,
+    fileName,
+    fileType,
+    fileSize,
+    docType,
+
+    // ✅ supplier task upload metadata
+    uploadType = "",
+    taskId = "",
+    requestId = "",
+    supplierNote = "",
+    supplierFileDescription = "",
+  },
   token
 ) => {
   assertToken(token);
   if (!sessionId || !userId || !s3Key || !fileName) {
     throw new Error("Missing file confirm parameters");
+  }
+
+  const sessionPayload = {
+    SessionId: sessionId,
+    UserId: userId,
+    s3Key,
+    fileName,
+    fileType: fileType || "application/octet-stream",
+    fileSize: fileSize ?? 0,
+    docType: docType || "OTHER",
+  };
+
+  if (uploadType) sessionPayload.uploadType = uploadType;
+  if (taskId) sessionPayload.taskId = taskId;
+  if (requestId) sessionPayload.requestId = requestId;
+  if (supplierNote) sessionPayload.supplierNote = supplierNote;
+  if (supplierFileDescription) {
+    sessionPayload.supplierFileDescription = supplierFileDescription;
   }
 
   const res = await fetch(ENDPOINTS.fileConfirm, {
@@ -817,15 +855,7 @@ export const confirmFileUploadAndType = async (
       Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({
-      session: {
-        SessionId: sessionId,
-        UserId: userId,
-        s3Key,
-        fileName,
-        fileType: fileType || "application/octet-stream",
-        fileSize: fileSize ?? 0,
-        docType: docType || "OTHER",
-      },
+      session: sessionPayload,
     }),
   });
 
@@ -835,6 +865,153 @@ export const confirmFileUploadAndType = async (
   }
 
   return res.json().catch(() => ({}));
+};
+
+// ===============================
+// ✅ SUPPLIER TASK FILE UPLOAD
+// Reuses existing presigned S3 upload, then confirms as supplier task upload.
+// ===============================
+export const uploadSupplierTaskFile = async (
+  {
+    taskId,
+    requestId,
+    sessionId,
+    userId,
+    file,
+    supplierNote = "",
+    supplierFileDescription = "",
+  },
+  token
+) => {
+  assertToken(token);
+
+  if (!taskId) throw new Error("taskId is required");
+  if (!requestId) throw new Error("requestId is required");
+  if (!sessionId) throw new Error("sessionId is required");
+  if (!userId) throw new Error("userId is required");
+  if (!file) throw new Error("file is required");
+
+  const uploaded = await uploadFilePresigned(
+    {
+      sessionId,
+      userId,
+      file,
+    },
+    token
+  );
+
+  const confirmed = await confirmFileUploadAndType(
+    {
+      sessionId: uploaded.sessionId || sessionId,
+      userId,
+      s3Key: uploaded.s3Key,
+      fileName: uploaded.fileName,
+      fileType: uploaded.fileType,
+      fileSize: uploaded.fileSize,
+      docType: "SUPPLIER_FMD_DOCUMENT",
+      uploadType: "SUPPLIER_FMD_DOCUMENT",
+      taskId,
+      requestId,
+      supplierNote,
+      supplierFileDescription,
+    },
+    token
+  );
+
+  return {
+    ...uploaded,
+    ...confirmed,
+    taskId,
+    requestId,
+    supplierNote,
+    supplierFileDescription,
+    uploadType: "SUPPLIER_FMD_DOCUMENT",
+  };
+};
+
+// ===============================
+// ✅ SUBMIT SUPPLIER TASK FOR ENGINEERING REVIEW
+// POST /supplier-task/submit-review
+// ===============================
+export const submitSupplierTaskForReview = async (
+  {
+    taskId,
+    requestId,
+    sessionId,
+    userId,
+    supplierAdditionalInformation = "",
+    uploadedFiles = [],
+  },
+  token
+) => {
+  assertToken(token);
+
+  if (!taskId) throw new Error("taskId is required");
+  if (!requestId) throw new Error("requestId is required");
+  if (!sessionId) throw new Error("sessionId is required");
+  if (!userId) throw new Error("userId is required");
+
+  const res = await fetch(ENDPOINTS.supplierTaskSubmitReview, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      session: {
+        SessionId: sessionId,
+        UserId: userId,
+      },
+      payload: {
+        taskId,
+        requestId,
+        supplierAdditionalInformation,
+        uploadedFiles,
+        taskStatus: "REVIEW",
+      },
+    }),
+  });
+
+  const { text, data } = await parseJsonSafe(res);
+
+  if (!res.ok) {
+    throw new Error(
+      data?.error ||
+        data?.message ||
+        text ||
+        `Submit supplier task failed (${res.status})`
+    );
+  }
+
+  return data;
+};
+
+// ===============================
+// ✅ DOWNLOAD SUPPLIER TASK FILE
+// Uses existing presigned download flow.
+// ===============================
+export const downloadSupplierTaskFile = async (
+  { taskId, requestId, sessionId, userId, fileName, s3Key, fileType },
+  token
+) => {
+  assertToken(token);
+
+  if (!taskId) throw new Error("taskId is required");
+  if (!requestId) throw new Error("requestId is required");
+  if (!sessionId) throw new Error("sessionId is required");
+  if (!userId) throw new Error("userId is required");
+  if (!s3Key) throw new Error("s3Key is required");
+
+  return downloadFilePresigned(
+    {
+      sessionId,
+      userId,
+      fileName,
+      s3Key,
+      fileType,
+    },
+    token
+  );
 };
 
 // ===============================
@@ -958,7 +1135,6 @@ export const saveGeneratedForm = async (body, token) => {
   }
 };
 
-
 // ===============================
 // ✅ COMPACT EMAIL BODY CLEANUP
 // Removes excessive blank lines before sending/saving email.
@@ -1037,9 +1213,21 @@ export const saveEmailDraft = async (
 // ===============================
 // ✅ SEND EMAIL
 // POST /customer-request/send-email
+// Also supports supplier_fmd_request when ChatWindow sends supplier draft.
 // ===============================
 export const sendCustomerEmail = async (
-  { sessionId, userId, to, subject, body, requestId = "", from = "" },
+  {
+    sessionId,
+    userId,
+    to,
+    subject,
+    body,
+    requestId = "",
+    from = "",
+    emailKind = "",
+    kind = "",
+    isSupplierEmail = false,
+  },
   token
 ) => {
   assertToken(token);
@@ -1051,6 +1239,8 @@ export const sendCustomerEmail = async (
   if (!body) throw new Error("Email body is required");
 
   const cleanBody = compactCustomerEmailBody(body);
+  const resolvedEmailKind =
+    emailKind || kind || (isSupplierEmail ? "supplier_fmd_request" : "");
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_STANDARD);
@@ -1071,6 +1261,9 @@ export const sendCustomerEmail = async (
           subject,
           body: cleanBody,
           requestId: requestId || "",
+          emailKind: resolvedEmailKind,
+          kind: resolvedEmailKind,
+          isSupplierEmail: Boolean(isSupplierEmail || resolvedEmailKind === "supplier_fmd_request"),
         },
         payload: {
           to,
@@ -1079,6 +1272,9 @@ export const sendCustomerEmail = async (
           body: cleanBody,
           requestId: requestId || "",
           RequestConfirmationEmail: cleanBody,
+          emailKind: resolvedEmailKind,
+          kind: resolvedEmailKind,
+          isSupplierEmail: Boolean(isSupplierEmail || resolvedEmailKind === "supplier_fmd_request"),
         },
       }),
       signal: controller.signal,

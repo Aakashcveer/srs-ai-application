@@ -22,6 +22,9 @@ import {
   sendCustomerEmail,
   processCustomerReply,
   buildRequestConfirmationEmailMarkdown,
+  uploadSupplierTaskFile,
+  submitSupplierTaskForReview,
+  downloadSupplierTaskFile,
 } from "../../api/api-config";
 import { getAccessToken } from "../../AWS/auth";
 
@@ -299,6 +302,121 @@ const hasSupplierPendingAssessmentSignal = (messages = []) => {
 const isSupplierTaskSessionId = (sessionId = "") => {
   const value = String(sessionId || "").trim().toUpperCase();
   return value.startsWith("TSKS") || value.startsWith("TSKE");
+};
+
+// Supplier task screen guard.
+// When switching/opening a TSKS/TSKE task, React can briefly keep old customer-request
+// flow messages in state. Do NOT hide all messages because that can blank the screen;
+// only hide customer request flow prompts/cards while preserving supplier task content.
+const isCustomerRequestFlowOnlyMessage = (message = {}) => {
+  const text = String(extractMessageText(message) || message?.text || "")
+    .trim()
+    .toLowerCase();
+
+  return (
+    message?.flowType === "customer_request" ||
+    isCustomerFlowQuestionText(text) ||
+    text === "create a new customer request" ||
+    text === "bmw group"
+  );
+};
+
+
+// Engineer supplier task safety:
+// The supplier review screen must be rendered from task/session data.
+// It should not send/read the old natural-language test prompt as a normal chat message.
+const isSupplierTaskAutoSummaryPromptText = (text = "") => {
+  const value = String(text || "").trim().toLowerCase();
+  return (
+    value === "__load_supplier_task_review__" ||
+    (
+      value.includes("show my pending task for supplier task") &&
+      value.includes("uploaded documents")
+    )
+  );
+};
+
+const isSupplierTaskGenericNoAccessReplyText = (text = "") => {
+  const value = String(text || "").trim().toLowerCase();
+  if (!value) return false;
+
+  const mentionsSupplierTask =
+    value.includes("supplier task") ||
+    value.includes("tsks#") ||
+    value.includes("tske#") ||
+    value.includes("tsk#");
+
+  if (!mentionsSupplierTask) return false;
+
+  return (
+    value.includes("i'm afraid i do not have the capability") ||
+    value.includes("i am afraid i do not have the capability") ||
+    value.includes("i apologize, but without access") ||
+    value.includes("unfortunately, without more specific information") ||
+    value.includes("unable to directly retrieve") ||
+    value.includes("unable to directly access") ||
+    value.includes("without access to your company's internal task management system") ||
+    value.includes("without being connected to your company's internal systems") ||
+    value.includes("task management systems and processes can vary") ||
+    value.includes("i do not have the capability to directly pull up") ||
+    value.includes("i cannot directly retrieve and display")
+  );
+};
+
+const isSupplierTaskAutoChatNoiseMessage = (message = {}) => {
+  const text = String(extractMessageText(message) || message?.text || "")
+    .trim()
+    .toLowerCase();
+
+  return (
+    isSupplierTaskAutoSummaryPromptText(text) ||
+    isSupplierTaskGenericNoAccessReplyText(text)
+  );
+};
+
+const buildSupplierTaskFallbackMessage = (sessionId = "", taskLike = {}) => {
+  const seededTask = normalizeSupplierTask({
+    supplierTask: {
+      ...(taskLike || {}),
+      taskId:
+        taskLike?.taskId ||
+        taskLike?.TaskId ||
+        taskLike?.sessionId ||
+        taskLike?.SessionId ||
+        sessionId,
+      TaskId:
+        taskLike?.TaskId ||
+        taskLike?.taskId ||
+        taskLike?.sessionId ||
+        taskLike?.SessionId ||
+        sessionId,
+      taskType: taskLike?.taskType || taskLike?.TaskType || "Supplier Request",
+      TaskType: taskLike?.TaskType || taskLike?.taskType || "Supplier Request",
+    },
+  });
+
+  return {
+    id: `supplier-task-fallback-${String(sessionId || "")}`,
+    sender: "bot",
+    role: "assistant",
+    text: "Supplier task loaded.",
+    content: "Supplier task loaded.",
+    supplierTask: seededTask || {
+      taskId: String(sessionId || ""),
+      taskName: "Request for Material Disclosure",
+      taskStatus: "LOADING",
+      taskPriority: "-",
+      taskType: "Supplier Request",
+      requestId: "",
+      assignedFor: "-",
+      uploadUrl: "http://localhost:5173",
+      description: "Loading supplier task details...",
+      uploadedDocuments: [],
+      additionalInformation: "",
+      missingInformation: ["Full Material Disclosure document"],
+      taskItem: {},
+    },
+  };
 };
 
 const hasLoadedSupplierTaskMessage = (messages = []) => {
@@ -1390,6 +1508,22 @@ const normalizeEmailDraft = (msg = {}, text = "", fallbackTo = "") => {
 
   const artifact = msg?.artifact || null;
 
+  // Supplier email sent confirmation is not an email draft.
+  // Render it as a simple chat message, not inside the Supplier Email Draft card.
+  const artifactType = String(
+    artifact?.type ||
+      artifact?.artifactType ||
+      msg?.type ||
+      msg?.artifactType ||
+      ""
+  )
+    .toLowerCase()
+    .trim();
+
+  if (artifactType === "supplier_email_sent") {
+    return null;
+  }
+
   const supplierDraftFromText = parseSupplierEmailDraftFromText(text);
 
   const draftKind =
@@ -1473,25 +1607,96 @@ const normalizeEmailDraft = (msg = {}, text = "", fallbackTo = "") => {
 };
 
 const normalizeSupplierTask = (msg = {}) => {
-  const artifact = msg?.supplierTask || msg?.artifact || {};
-  if (!isSupplierTaskMessage(msg) && String(artifact?.type || "").toLowerCase() !== "supplier_task") {
+  const text = String(extractMessageText(msg) || msg?.text || "");
+  const directDraft =
+    msg?.emailDraft ||
+    msg?.EmailDraft ||
+    msg?.artifact?.emailDraft ||
+    msg?.artifact?.EmailDraft ||
+    null;
+  const artifact = msg?.artifact || null;
+
+  // Important: supplier email drafts can contain TaskId / supplier metadata.
+  // They must render as EmailDraftCard, not as Engineer Supplier Review cards.
+  if (
+    isSupplierEmailDraft(directDraft || artifact || {}, text) ||
+    String(
+      directDraft?.emailKind ||
+        directDraft?.kind ||
+        artifact?.emailKind ||
+        artifact?.kind ||
+        ""
+    )
+      .toLowerCase()
+      .includes("supplier_fmd_request")
+  ) {
     return null;
   }
 
-  const taskItem = artifact?.taskItem || {};
-  const detail = taskItem?.TaskDetail || {};
+  const rootArtifact = msg?.supplierTask || msg?.artifact?.supplierTask || msg?.artifact?.task || msg?.artifact || msg || {};
+  const taskItem =
+    rootArtifact?.taskItem ||
+    rootArtifact?.TaskItem ||
+    rootArtifact?.item ||
+    rootArtifact?.Item ||
+    rootArtifact?.task ||
+    rootArtifact?.Task ||
+    msg?.taskItem ||
+    msg?.TaskItem ||
+    {};
 
-  const text = String(extractMessageText(msg) || msg?.text || "");
+  const detail =
+    taskItem?.TaskDetail ||
+    taskItem?.taskDetail ||
+    taskItem?.TaskDetails ||
+    taskItem?.taskDetails ||
+    rootArtifact?.TaskDetail ||
+    rootArtifact?.taskDetail ||
+    {};
+
+  const artifactType = String(
+    rootArtifact?.type ||
+      rootArtifact?.artifactType ||
+      taskItem?.type ||
+      taskItem?.Type ||
+      ""
+  )
+    .toLowerCase()
+    .trim();
+
+  const hasTaskId = Boolean(
+    rootArtifact?.taskId ||
+      rootArtifact?.TaskId ||
+      taskItem?.TaskId ||
+      taskItem?.taskId ||
+      msg?.taskId ||
+      msg?.TaskId
+  );
+
+  if (!isSupplierTaskMessage(msg) && artifactType !== "supplier_task" && !hasTaskId) {
+    return null;
+  }
 
   const pickFromText = (label) => {
     const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const match = text.match(new RegExp(`\\*\\*${escaped}:\\*\\*\\s*([^\\n]+)`, "i"));
-    return match?.[1]?.trim() || "";
+    const patterns = [
+      new RegExp(`\\*\\*${escaped}:\\*\\*\\s*([^\\n]+)`, "i"),
+      new RegExp(`${escaped}\\s*:\\s*([^\\n]+)`, "i"),
+    ];
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match?.[1]) return match[1].trim();
+    }
+    return "";
   };
 
   const missing =
-    artifact?.missingInformation ||
+    rootArtifact?.missingInformation ||
+    rootArtifact?.MissingInformation ||
     detail?.MissingInformation ||
+    detail?.missingInformation ||
+    detail?.RequestedInformation ||
+    detail?.requestedInformation ||
     [];
 
   const missingInformation = Array.isArray(missing)
@@ -1500,64 +1705,571 @@ const normalizeSupplierTask = (msg = {}) => {
     ? [missing]
     : [];
 
+  const assignedFor =
+    rootArtifact?.assignedFor ||
+    rootArtifact?.TaskAssignedFor ||
+    taskItem?.TaskAssignedFor ||
+    taskItem?.assignedFor ||
+    pickFromText("Customer / Part") ||
+    pickFromText("Part") ||
+    "";
+
+  const uploadedDocuments = normalizeSupplierUploadedDocuments({
+    ...rootArtifact,
+    taskItem,
+    TaskDetail: detail,
+  });
+
   return {
     taskId:
-      artifact?.taskId ||
+      rootArtifact?.taskId ||
+      rootArtifact?.TaskId ||
       taskItem?.TaskId ||
+      taskItem?.taskId ||
       pickFromText("Task ID") ||
       msg?.taskId ||
+      msg?.TaskId ||
       "",
     taskName:
-      artifact?.taskName ||
+      rootArtifact?.taskName ||
+      rootArtifact?.TaskName ||
       detail?.TaskName ||
+      detail?.taskName ||
       pickFromText("Task") ||
       "Request for Material Disclosure",
     taskStatus:
-      artifact?.taskStatus ||
+      rootArtifact?.taskStatus ||
+      rootArtifact?.TaskStatus ||
       taskItem?.TaskStatus ||
+      taskItem?.taskStatus ||
       pickFromText("Status") ||
       "CREATE",
     taskPriority:
-      artifact?.taskPriority ||
+      rootArtifact?.taskPriority ||
+      rootArtifact?.TaskPriority ||
       taskItem?.TaskPriority ||
+      taskItem?.taskPriority ||
       pickFromText("Priority") ||
       "MEDIUM",
     taskType:
-      artifact?.taskType ||
+      rootArtifact?.taskType ||
+      rootArtifact?.TaskType ||
       taskItem?.TaskType ||
+      taskItem?.taskType ||
       pickFromText("Task Type") ||
       "Supplier Request",
     requestId:
-      artifact?.requestId ||
-      artifact?.assignedBy ||
+      rootArtifact?.requestId ||
+      rootArtifact?.RequestId ||
+      rootArtifact?.assignedBy ||
+      rootArtifact?.TaskAssignedBy ||
+      detail?.RequestId ||
+      detail?.requestId ||
       taskItem?.TaskAssignedBy ||
+      taskItem?.assignedBy ||
       pickFromText("Assigned By Request") ||
+      pickFromText("Related Request ID") ||
       "",
-    assignedFor:
-      artifact?.assignedFor ||
-      taskItem?.TaskAssignedFor ||
-      pickFromText("Customer / Part") ||
+    assignedTo:
+      rootArtifact?.assignedTo ||
+      rootArtifact?.TaskAssignedTo ||
+      taskItem?.TaskAssignedTo ||
+      taskItem?.assignedTo ||
+      pickFromText("Assigned To") ||
       "",
+    assignedFor,
+    componentPart:
+      rootArtifact?.componentPart ||
+      rootArtifact?.componentPartKey ||
+      detail?.CustomerPartKey ||
+      detail?.CustomerPart ||
+      assignedFor,
     uploadUrl:
-      artifact?.supplierPortalUrl ||
+      rootArtifact?.supplierPortalUrl ||
+      rootArtifact?.SupplierPortalUrl ||
       detail?.SupplierPortalUrl ||
+      detail?.supplierPortalUrl ||
       pickFromText("Upload URL") ||
       "http://localhost:5173",
     description:
-      artifact?.taskDescription ||
+      rootArtifact?.taskDescription ||
+      rootArtifact?.TaskDescription ||
       detail?.TaskDescription ||
+      detail?.taskDescription ||
       pickFromText("Description") ||
       "",
+    uploadedDocuments,
+    additionalInformation:
+      rootArtifact?.additionalInformation ||
+      rootArtifact?.supplierAdditionalInformation ||
+      detail?.AdditionalInformation ||
+      detail?.SupplierAdditionalInformation ||
+      taskItem?.AdditionalInformation ||
+      taskItem?.SupplierAdditionalInformation ||
+      "",
+    taskItem,
     missingInformation,
   };
 };
 
-const SupplierTaskCard = ({ task }) => {
+const getUserProfileValue = (user = {}) => {
+  const raw = String(
+    user?.profile ||
+      user?.Profile ||
+      user?.role ||
+      user?.Role ||
+      user?.userProfile ||
+      user?.UserProfile ||
+      user?.profileType ||
+      user?.ProfileType ||
+      user?.attributes?.profile ||
+      user?.attributes?.["custom:profile"] ||
+      user?.signInDetails?.loginProfile ||
+      ""
+  )
+    .trim()
+    .toLowerCase();
+
+  if (
+    raw.includes("engineer") ||
+    raw.includes("engineering") ||
+    raw.includes("internal")
+  ) {
+    return "engineering";
+  }
+
+  if (raw.includes("supplier")) return "supplier";
+  if (raw.includes("customer")) return "customer";
+
+  return raw;
+};
+
+const isEngineeringProfileUser = (user = {}) =>
+  getUserProfileValue(user) === "engineering";
+
+const SUPPLIER_UPLOAD_ARRAY_KEYS = new Set([
+  "uploadedDocuments",
+  "UploadedDocuments",
+  "supplierUploadedDocuments",
+  "SupplierUploadedDocuments",
+  "supplierUploads",
+  "SupplierUploads",
+  "supplierUploadedFiles",
+  "SupplierUploadedFiles",
+  "uploadedFiles",
+  "UploadedFiles",
+  "files",
+  "Files",
+  "documents",
+  "Documents",
+  "attachments",
+  "Attachments",
+]);
+
+const looksLikeSupplierUploadDoc = (value) => {
+  if (!value) return false;
+  if (typeof value === "string") return /\.(pdf|png|jpe?g|webp|gif|docx?|xlsx?|csv|txt|zip|pptx?)$/i.test(value);
+  if (typeof value !== "object") return false;
+
+  return Boolean(
+    value?.s3Key ||
+      value?.S3Key ||
+      value?.key ||
+      value?.Key ||
+      value?.fileName ||
+      value?.FileName ||
+      value?.name ||
+      value?.Name ||
+      value?.originalFileName ||
+      value?.OriginalFileName ||
+      value?.downloadUrl ||
+      value?.DownloadUrl
+  );
+};
+
+const collectSupplierUploadArrays = (source, depth = 0, seen = new Set()) => {
+  if (!source || depth > 6) return [];
+
+  if (Array.isArray(source)) {
+    if (source.some(looksLikeSupplierUploadDoc)) return [source];
+    return source.flatMap((item) => collectSupplierUploadArrays(item, depth + 1, seen));
+  }
+
+  if (typeof source !== "object") return [];
+  if (seen.has(source)) return [];
+  seen.add(source);
+
+  const arrays = [];
+  for (const [key, value] of Object.entries(source)) {
+    if (Array.isArray(value) && SUPPLIER_UPLOAD_ARRAY_KEYS.has(key) && value.some(looksLikeSupplierUploadDoc)) {
+      arrays.push(value);
+      continue;
+    }
+
+    if (Array.isArray(value) && value.some(looksLikeSupplierUploadDoc)) {
+      const keyLooksRelated = /upload|document|file|attachment/i.test(key);
+      if (keyLooksRelated) {
+        arrays.push(value);
+        continue;
+      }
+    }
+
+    if (value && typeof value === "object") {
+      arrays.push(...collectSupplierUploadArrays(value, depth + 1, seen));
+    }
+  }
+
+  return arrays;
+};
+
+const normalizeSupplierUploadedDocuments = (task = {}) => {
+  const taskItem =
+    task?.taskItem ||
+    task?.TaskItem ||
+    task?.item ||
+    task?.Item ||
+    task?.task ||
+    task?.Task ||
+    {};
+
+  const detail =
+    taskItem?.TaskDetail ||
+    taskItem?.taskDetail ||
+    taskItem?.TaskDetails ||
+    taskItem?.taskDetails ||
+    task?.TaskDetail ||
+    task?.taskDetail ||
+    task?.TaskDetails ||
+    task?.taskDetails ||
+    {};
+
+  const directCandidates = [
+    task?.uploadedDocuments,
+    task?.UploadedDocuments,
+    task?.supplierUploadedDocuments,
+    task?.SupplierUploadedDocuments,
+    task?.supplierUploads,
+    task?.SupplierUploads,
+    task?.supplierUploadedFiles,
+    task?.SupplierUploadedFiles,
+    task?.uploadedFiles,
+    task?.UploadedFiles,
+    task?.documents,
+    task?.Documents,
+    task?.attachments,
+    task?.Attachments,
+    detail?.UploadedDocuments,
+    detail?.SupplierUploadedDocuments,
+    detail?.SupplierUploads,
+    detail?.SupplierUploadedFiles,
+    detail?.UploadedFiles,
+    detail?.Documents,
+    detail?.Attachments,
+    taskItem?.UploadedDocuments,
+    taskItem?.SupplierUploadedDocuments,
+    taskItem?.SupplierUploads,
+    taskItem?.SupplierUploadedFiles,
+    taskItem?.UploadedFiles,
+    taskItem?.Documents,
+    taskItem?.Attachments,
+  ].filter(Boolean);
+
+  const discoveredArrays = collectSupplierUploadArrays({ task, taskItem, detail });
+
+  const rawList = [...directCandidates, ...discoveredArrays].flatMap((raw) => {
+    if (!raw) return [];
+    if (Array.isArray(raw)) return raw;
+    return [raw];
+  });
+
+  const seenDocs = new Set();
+
+  return rawList
+    .filter(Boolean)
+    .map((doc, index) => {
+      if (typeof doc === "string") {
+        return {
+          uploadId: `supplier-upload-${index + 1}`,
+          fileName: doc,
+          uploadedBy: "",
+          uploadedAt: "",
+          s3Key: "",
+          s3Bucket: "",
+          downloadUrl: "",
+          fileType: "application/octet-stream",
+          fileSize: "",
+          supplierNote: "",
+          fileDescription: "",
+          taskId: task?.taskId || task?.TaskId || taskItem?.TaskId || "",
+          requestId: task?.requestId || task?.RequestId || detail?.RequestId || taskItem?.TaskAssignedBy || "",
+          index,
+        };
+      }
+
+      const supplierNote = String(
+        doc?.supplierNote ||
+          doc?.SupplierNote ||
+          doc?.fileDescription ||
+          doc?.FileDescription ||
+          doc?.description ||
+          doc?.Description ||
+          doc?.note ||
+          doc?.Note ||
+          doc?.comment ||
+          doc?.Comment ||
+          doc?.additionalInformation ||
+          doc?.AdditionalInformation ||
+          doc?.supplierAdditionalInformation ||
+          doc?.SupplierAdditionalInformation ||
+          ""
+      ).trim();
+
+      return {
+        uploadId:
+          doc?.uploadId ||
+          doc?.UploadId ||
+          doc?.id ||
+          doc?.Id ||
+          `supplier-upload-${index + 1}`,
+        fileName:
+          doc?.fileName ||
+          doc?.FileName ||
+          doc?.name ||
+          doc?.Name ||
+          doc?.originalFileName ||
+          doc?.OriginalFileName ||
+          doc?.documentName ||
+          doc?.DocumentName ||
+          doc?.attachmentName ||
+          doc?.AttachmentName ||
+          `Supplier document ${index + 1}`,
+        uploadedBy:
+          doc?.uploadedBy ||
+          doc?.UploadedBy ||
+          doc?.supplierEmail ||
+          doc?.SupplierEmail ||
+          doc?.uploadedByEmail ||
+          doc?.UploadedByEmail ||
+          "",
+        uploadedAt:
+          doc?.uploadedAt ||
+          doc?.UploadedAt ||
+          doc?.createdAt ||
+          doc?.CreatedAt ||
+          doc?.submittedAt ||
+          doc?.SubmittedAt ||
+          "",
+        s3Key:
+          doc?.s3Key ||
+          doc?.S3Key ||
+          doc?.key ||
+          doc?.Key ||
+          doc?.s3ObjectKey ||
+          doc?.S3ObjectKey ||
+          doc?.objectKey ||
+          doc?.ObjectKey ||
+          "",
+        s3Bucket: doc?.s3Bucket || doc?.S3Bucket || doc?.bucket || doc?.Bucket || "",
+        downloadUrl:
+          doc?.downloadUrl ||
+          doc?.DownloadUrl ||
+          doc?.url ||
+          doc?.Url ||
+          doc?.presignedUrl ||
+          doc?.PresignedUrl ||
+          "",
+        fileType:
+          doc?.fileType ||
+          doc?.FileType ||
+          doc?.mimeType ||
+          doc?.MimeType ||
+          doc?.contentType ||
+          doc?.ContentType ||
+          "application/octet-stream",
+        fileSize:
+          doc?.fileSize ||
+          doc?.FileSize ||
+          doc?.size ||
+          doc?.Size ||
+          doc?.sizeBytes ||
+          doc?.SizeBytes ||
+          "",
+        supplierNote,
+        fileDescription: supplierNote,
+        taskId: doc?.taskId || doc?.TaskId || task?.taskId || task?.TaskId || taskItem?.TaskId || "",
+        requestId:
+          doc?.requestId ||
+          doc?.RequestId ||
+          task?.requestId ||
+          task?.RequestId ||
+          detail?.RequestId ||
+          detail?.requestId ||
+          taskItem?.TaskAssignedBy ||
+          "",
+        index,
+      };
+    })
+    .filter((doc) => {
+      const key = `${String(doc.s3Key || "").trim()}|${String(doc.fileName || "").trim()}|${String(doc.uploadedAt || "").trim()}`;
+      if (seenDocs.has(key)) return false;
+      seenDocs.add(key);
+      return Boolean(doc.fileName || doc.s3Key || doc.downloadUrl);
+    });
+};
+
+const normalizeSupplierAdditionalInfo = (task = {}) => {
+  const taskItem = task?.taskItem || {};
+  const detail = taskItem?.TaskDetail || taskItem?.taskDetail || {};
+
+  const raw =
+    task?.additionalInformation ||
+    task?.supplierAdditionalInformation ||
+    task?.supplierNotes ||
+    detail?.AdditionalInformation ||
+    detail?.SupplierAdditionalInformation ||
+    detail?.SupplierNotes ||
+    taskItem?.AdditionalInformation ||
+    taskItem?.SupplierAdditionalInformation ||
+    taskItem?.SupplierNotes ||
+    "";
+
+  if (Array.isArray(raw)) return raw.filter(Boolean).map((x) => String(x));
+  if (raw && typeof raw === "object") return [JSON.stringify(raw, null, 2)];
+  if (raw) return [String(raw)];
+  return [];
+};
+
+const SupplierTaskUploadCard = ({ task, user, sessionId, onUploadComplete, onSubmitComplete }) => {
+  const uploadInputRef = useRef(null);
+  const [selectedUploads, setSelectedUploads] = useState([]);
+  const [submitMessage, setSubmitMessage] = useState("");
+  const [uploadingSupplierFiles, setUploadingSupplierFiles] = useState(false);
+  const [submittingReview, setSubmittingReview] = useState(false);
+
   if (!task) return null;
 
   const missingItems = Array.isArray(task.missingInformation)
     ? task.missingInformation.filter(Boolean)
     : [];
+
+  const componentLabel =
+    task.componentPart ||
+    task.componentPartKey ||
+    task.assignedFor ||
+    task.taskName ||
+    "-";
+
+  const existingUploads = normalizeSupplierUploadedDocuments(task);
+
+  const handleChooseFiles = (event) => {
+    const files = Array.from(event.target.files || []);
+    if (!files.length) return;
+
+    const nextUploads = files.map((file) => ({
+      localId: `${file.name}-${file.size}-${file.lastModified}-${Math.random()
+        .toString(16)
+        .slice(2)}`,
+      file,
+      fileName: file.name,
+      fileSize: file.size,
+      fileType: file.type || "Unknown",
+      supplierNote: "",
+    }));
+
+    setSelectedUploads((prev) => [...prev, ...nextUploads]);
+    setSubmitMessage("");
+    event.target.value = "";
+  };
+
+  const updateUploadNote = (localId, note) => {
+    setSelectedUploads((prev) =>
+      prev.map((item) =>
+        item.localId === localId ? { ...item, supplierNote: note } : item
+      )
+    );
+  };
+
+  const removeSelectedUpload = (localId) => {
+    setSelectedUploads((prev) => prev.filter((item) => item.localId !== localId));
+    setSubmitMessage("");
+  };
+
+  const formatFileSize = (size = 0) => {
+    const value = Number(size || 0);
+    if (!value) return "";
+    if (value < 1024) return `${value} B`;
+    if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const handleSubmitForReview = async () => {
+    if (!selectedUploads.length && !existingUploads.length) {
+      setSubmitMessage("Please add at least one document before submitting for review.");
+      return;
+    }
+
+    const taskId = String(task?.taskId || "").trim();
+    const requestId = String(task?.requestId || task?.assignedBy || "").trim();
+    const activeSessionId = String(sessionId || taskId || "").trim();
+    const userEmail = String(user?.email || "").trim();
+
+    if (!taskId || !requestId || !activeSessionId || !userEmail) {
+      setSubmitMessage("Missing Task ID, Request ID, Session ID, or user email.");
+      return;
+    }
+
+    try {
+      setUploadingSupplierFiles(true);
+      setSubmittingReview(true);
+      setSubmitMessage("Uploading supplier document(s)...");
+
+      const token = await getAccessToken();
+
+      const uploadedFiles = [];
+
+      for (const item of selectedUploads) {
+        const uploaded = await uploadSupplierTaskFile(
+          {
+            taskId,
+            requestId,
+            sessionId: activeSessionId,
+            userId: userEmail,
+            file: item.file,
+            supplierNote: item.supplierNote || "",
+            supplierFileDescription: item.supplierNote || "",
+          },
+          token
+        );
+
+        uploadedFiles.push(uploaded);
+      }
+
+      setSubmitMessage("Submitting supplier task for engineering review...");
+
+      const submitRes = await submitSupplierTaskForReview(
+        {
+          taskId,
+          requestId,
+          sessionId: activeSessionId,
+          userId: userEmail,
+          supplierAdditionalInformation: "",
+          uploadedFiles,
+        },
+        token
+      );
+
+      setSelectedUploads([]);
+      setSubmitMessage("✅ Submitted for engineering review.");
+      onSubmitComplete?.(submitRes);
+      onUploadComplete?.(submitRes);
+    } catch (e) {
+      console.error("Supplier task submit failed:", e);
+      setSubmitMessage(`❌ ${e?.message || "Supplier task upload failed"}`);
+    } finally {
+      setUploadingSupplierFiles(false);
+      setSubmittingReview(false);
+    }
+  };
 
   return (
     <div
@@ -1594,7 +2306,7 @@ const SupplierTaskCard = ({ task }) => {
               lineHeight: 1.45,
             }}
           >
-            Review the task, upload the requested document or information, then submit it for engineering review.
+            Add one or more documents. Each document can have its own supplier note, description, or clarification for engineering review.
           </div>
         </div>
 
@@ -1648,8 +2360,8 @@ const SupplierTaskCard = ({ task }) => {
         {[
           ["Task ID", task.taskId || "-"],
           ["Priority", task.taskPriority || "-"],
-          ["Request ID", task.requestId || "-"],
-          ["Customer / Part", task.assignedFor || "-"],
+          ["Component / Part", componentLabel],
+          ["Task Status", task.taskStatus || "CREATE"],
         ].map(([label, value]) => (
           <div
             key={label}
@@ -1703,22 +2415,954 @@ const SupplierTaskCard = ({ task }) => {
               {task.uploadUrl}
             </a>
           </p>
+
+          <div
+            style={{
+              marginTop: "18px",
+              borderTop: "1px solid #e2e8f0",
+              paddingTop: "16px",
+            }}
+          >
+            <p><strong>Documents to upload</strong></p>
+            <input
+              ref={uploadInputRef}
+              type="file"
+              multiple
+              onChange={handleChooseFiles}
+              style={{ display: "none" }}
+            />
+
+            <div style={{ display: "grid", gap: "12px" }}>
+              {existingUploads.map((doc, index) => (
+                <div
+                  key={doc.uploadId || `${doc.fileName}-${index}`}
+                  style={{
+                    border: "1px solid #dbeafe",
+                    borderRadius: "16px",
+                    padding: "13px",
+                    background: "#f8fbff",
+                  }}
+                >
+                  <div style={{ fontWeight: 850, color: "#0f172a" }}>
+                    {index + 1}. {doc.fileName}
+                  </div>
+                  <div style={{ color: "#64748b", fontSize: "12px", marginTop: "4px" }}>
+                    Already uploaded {doc.uploadedAt ? `• ${doc.uploadedAt}` : ""}
+                  </div>
+                  {doc.supplierNote ? (
+                    <div style={{ marginTop: "8px", color: "#334155", fontSize: "13px" }}>
+                      <strong>Supplier note:</strong> {doc.supplierNote}
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+
+              {selectedUploads.map((item, index) => (
+                <div
+                  key={item.localId}
+                  style={{
+                    border: "1px solid #e2e8f0",
+                    borderRadius: "16px",
+                    padding: "13px",
+                    background: "#fff",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "flex-start" }}>
+                    <div>
+                      <div style={{ fontWeight: 850, color: "#0f172a" }}>
+                        {existingUploads.length + index + 1}. {item.fileName}
+                      </div>
+                      <div style={{ color: "#64748b", fontSize: "12px", marginTop: "4px" }}>
+                        {item.fileType || "File"}{formatFileSize(item.fileSize) ? ` • ${formatFileSize(item.fileSize)}` : ""}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="premiumGhostBtn"
+                      onClick={() => removeSelectedUpload(item.localId)}
+                      style={{ minHeight: "34px", padding: "7px 10px" }}
+                    >
+                      Remove
+                    </button>
+                  </div>
+
+                  <label
+                    style={{
+                      display: "block",
+                      marginTop: "12px",
+                      fontSize: "11px",
+                      fontWeight: 850,
+                      color: "#64748b",
+                      letterSpacing: "0.08em",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    Information / description for this file
+                  </label>
+                  <textarea
+                    value={item.supplierNote}
+                    onChange={(e) => updateUploadNote(item.localId, e.target.value)}
+                    placeholder="Example: Full material disclosure for this component, material breakdown, certificate details, or clarification for engineering."
+                    rows={3}
+                    style={{
+                      width: "100%",
+                      marginTop: "7px",
+                      borderRadius: "12px",
+                      border: "1px solid #dbe3f0",
+                      padding: "10px 12px",
+                      outline: "none",
+                      resize: "vertical",
+                      fontSize: "13px",
+                    }}
+                  />
+                </div>
+              ))}
+
+              {!existingUploads.length && !selectedUploads.length ? (
+                <div
+                  style={{
+                    border: "1px dashed #cbd5e1",
+                    borderRadius: "16px",
+                    padding: "16px",
+                    background: "#f8fafc",
+                    color: "#64748b",
+                  }}
+                >
+                  No documents selected yet. You can add multiple files, and each file can include its own information note.
+                </div>
+              ) : null}
+            </div>
+          </div>
         </div>
       </div>
 
       <div className="emailDraftFooter">
         <div className="emailDraftFooterHint">
-          Upload support is the next step. For now, this card confirms the supplier task assignment and requested information.
+          Customer details are intentionally hidden from the supplier. Each uploaded file will be saved with its own note for engineer review.
+          {submitMessage ? <div className="formSaveMsg" style={{ marginTop: "8px" }}>{submitMessage}</div> : null}
+        </div>
+
+        <div className="emailDraftFooterActions">
+          <button
+            type="button"
+            className="premiumGhostBtn"
+            onClick={() => uploadInputRef.current?.click()}
+            disabled={uploadingSupplierFiles || submittingReview}
+          >
+            Add Document
+          </button>
+          <button
+            type="button"
+            className="formSaveBtn premiumFormSaveBtn"
+            onClick={handleSubmitForReview}
+            disabled={
+              uploadingSupplierFiles ||
+              submittingReview ||
+              (!selectedUploads.length && !existingUploads.length)
+            }
+          >
+            {submittingReview ? "Submitting..." : uploadingSupplierFiles ? "Uploading..." : "Submit for Review"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const EngineerSupplierTaskReviewCard = ({ task, user, sessionId, reviewMarkdownOverride = "" }) => {
+  if (!task) return null;
+
+  const uploadedDocuments = normalizeSupplierUploadedDocuments(task);
+  const missingItems = Array.isArray(task.missingInformation)
+    ? task.missingInformation.filter(Boolean)
+    : [];
+
+  const componentLabel =
+    task.componentPart ||
+    task.componentPartKey ||
+    task.assignedFor ||
+    task.taskName ||
+    "-";
+
+  const status = String(task.taskStatus || "CREATE").toUpperCase();
+  const isReadyForReview = ["REVIEW", "INREVIEW", "IN-PROGRESS", "INPROGRESS"].includes(status);
+  const cleanReviewMarkdownOverride = String(reviewMarkdownOverride || "").trim();
+
+  const getSupplierDocumentDownloadUrl = async (doc) => {
+    const taskId = String(task?.taskId || doc?.taskId || "").trim();
+    const requestId = String(task?.requestId || task?.assignedBy || doc?.requestId || "").trim();
+    const activeSessionId = String(sessionId || taskId || "").trim();
+    const userEmail = String(user?.email || "").trim();
+    const fileName = doc?.fileName || "supplier-document";
+    const fileType = doc?.fileType || "application/octet-stream";
+    const s3Key = String(doc?.s3Key || "").trim();
+
+    if (doc?.downloadUrl) return doc.downloadUrl;
+
+    if (!s3Key) {
+      throw new Error("No S3 key found for this supplier document.");
+    }
+
+    const token = await getAccessToken();
+
+    try {
+      const res = await downloadSupplierTaskFile(
+        {
+          taskId,
+          requestId,
+          sessionId: activeSessionId,
+          userId: userEmail,
+          fileName,
+          s3Key,
+          fileType,
+        },
+        token
+      );
+
+      const supplierUrl =
+        (typeof res === "string" ? res : "") ||
+        res?.downloadUrl ||
+        res?.url ||
+        res?.presignedUrl ||
+        res?.data?.downloadUrl ||
+        res?.payload?.downloadUrl ||
+        "";
+
+      if (supplierUrl) return supplierUrl;
+    } catch (supplierErr) {
+      console.warn("Supplier download endpoint failed, trying generic presign-download:", supplierErr);
+    }
+
+    const fallbackRes = await downloadFilePresigned(
+      {
+        userId: userEmail,
+        sessionId: activeSessionId,
+        fileName,
+        fileType,
+        s3Key,
+      },
+      token
+    );
+
+    const fallbackUrl =
+      fallbackRes?.downloadUrl ||
+      fallbackRes?.url ||
+      fallbackRes?.presignedUrl ||
+      fallbackRes?.data?.downloadUrl ||
+      fallbackRes?.payload?.downloadUrl ||
+      "";
+
+    if (!fallbackUrl) {
+      throw new Error("No download URL returned for supplier document.");
+    }
+
+    return fallbackUrl;
+  };
+
+  const handlePreviewSupplierDocument = async (doc) => {
+    try {
+      const url = await getSupplierDocumentDownloadUrl(doc);
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (e) {
+      console.error("Supplier document preview failed:", e);
+      alert(e?.message || "Preview failed");
+    }
+  };
+
+  const handleDownloadSupplierDocument = async (doc) => {
+    try {
+      const url = await getSupplierDocumentDownloadUrl(doc);
+      const fileName = doc?.fileName || "supplier-document";
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } catch (e) {
+      console.error("Supplier document download failed:", e);
+      alert(e?.message || "Download failed");
+    }
+  };
+
+  return (
+    <div
+      className="emailDraftShell premiumEmailDraft engineerSupplierReviewCard"
+      style={{
+        position: "relative",
+        overflow: "hidden",
+        borderRadius: "24px",
+        border: "1px solid rgba(99, 102, 241, 0.22)",
+        background:
+          "linear-gradient(145deg, rgba(255,255,255,0.99), rgba(248,250,255,0.96))",
+        boxShadow:
+          "0 24px 70px rgba(15, 23, 42, 0.12), inset 0 1px 0 rgba(255,255,255,0.9)",
+      }}
+    >
+      <div
+        style={{
+          position: "absolute",
+          inset: "0 auto 0 0",
+          width: "6px",
+          background: "linear-gradient(135deg, #4f46e5, #0ea5e9)",
+        }}
+      />
+
+      <div className="emailDraftHeader">
+        <div>
+          <div className="emailDraftEyebrow">Engineer Supplier Review</div>
+          <div className="emailDraftTitle">Review supplier uploaded information</div>
+          <div
+            style={{
+              marginTop: "8px",
+              color: "#64748b",
+              fontSize: "13px",
+              lineHeight: 1.45,
+            }}
+          >
+            Supplier uploaded documents are ready for engineering review.
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <span
+            style={{
+              alignSelf: "center",
+              borderRadius: "999px",
+              padding: "8px 12px",
+              fontSize: "11px",
+              fontWeight: 800,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              color: isReadyForReview ? "#047857" : "#92400e",
+              background: isReadyForReview ? "rgba(236, 253, 245, 0.96)" : "rgba(255, 251, 235, 0.96)",
+              border: isReadyForReview ? "1px solid rgba(16, 185, 129, 0.25)" : "1px solid rgba(245, 158, 11, 0.25)",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {task.taskStatus || "CREATE"}
+          </span>
+
+          <span
+            style={{
+              alignSelf: "center",
+              borderRadius: "999px",
+              padding: "8px 12px",
+              fontSize: "11px",
+              fontWeight: 800,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              color: "#3730a3",
+              background: "rgba(238, 242, 255, 0.96)",
+              border: "1px solid rgba(99, 102, 241, 0.2)",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {task.taskType || "Supplier Request"}
+          </span>
+        </div>
+      </div>
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+          gap: "12px",
+          margin: "16px 0",
+        }}
+      >
+        {[
+          ["Task ID", task.taskId || "-"],
+          ["Related Request ID", task.requestId || "-"],
+          ["Component / Part", componentLabel],
+          ["Priority", task.taskPriority || "-"],
+        ].map(([label, value]) => (
+          <div
+            key={label}
+            style={{
+              borderRadius: "16px",
+              border: "1px solid #e2e8f0",
+              background: "rgba(255,255,255,0.82)",
+              padding: "13px 14px",
+              minWidth: 0,
+            }}
+          >
+            <div
+              style={{
+                fontSize: "11px",
+                fontWeight: 800,
+                color: "#64748b",
+                letterSpacing: "0.09em",
+                textTransform: "uppercase",
+                marginBottom: "6px",
+              }}
+            >
+              {label}
+            </div>
+            <div style={{ fontSize: "14px", fontWeight: 750, color: "#0f172a", wordBreak: "break-word" }}>
+              {value}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="emailDraftBodyCard">
+        {cleanReviewMarkdownOverride ? (
+          <SupplierUploadedDocsMarkdownCard
+            text={cleanReviewMarkdownOverride}
+            user={user}
+            sessionId={sessionId || task.taskId}
+          />
+        ) : (
+          <div className="emailDraftPreview markdown-body">
+            <p>
+              Here are the supplier uploaded documents for this supplier task:
+              <strong> {task.taskId || "-"}</strong>
+            </p>
+
+            <h3 style={{ marginTop: "14px" }}>Supplier Task Summary</h3>
+            <ul>
+              <li><strong>Status:</strong> {task.taskStatus || "CREATE"}</li>
+              <li><strong>Priority:</strong> {task.taskPriority || "-"}</li>
+              <li><strong>Assigned To:</strong> {task.taskItem?.TaskAssignedTo || task.assignedTo || "Supplier"}</li>
+              <li><strong>Part:</strong> {componentLabel}</li>
+              <li>
+                <strong>Requested Information:</strong>{" "}
+                {missingItems.length ? missingItems.join(", ") : "Full Material Disclosure document"}
+              </li>
+              <li><strong>Uploaded Documents:</strong> {uploadedDocuments.length}</li>
+              <li>
+                <strong>Next Action:</strong>{" "}
+                {uploadedDocuments.length
+                  ? "✅ Supplier has uploaded documents. Engineering review is required."
+                  : "Waiting for supplier submission."}
+              </li>
+            </ul>
+
+            <h3 style={{ marginTop: "18px" }}>Supplier uploaded documents</h3>
+
+            {uploadedDocuments.length ? (
+              <>
+                <ol>
+                  {uploadedDocuments.map((doc, index) => (
+                    <li key={`${doc.fileName}-${index}`} style={{ marginBottom: "14px" }}>
+                      <strong>{doc.fileName}</strong>
+                      <ul>
+                        {doc.uploadedAt ? <li>Uploaded At: {doc.uploadedAt}</li> : null}
+                        <li>Uploaded By: {doc.uploadedBy || "Supplier"}</li>
+                        <li>Supplier Note: {doc.supplierNote || "-"}</li>
+                      </ul>
+                    </li>
+                  ))}
+                </ol>
+
+                <div
+                  style={{
+                    marginTop: "18px",
+                    borderTop: "1px solid #e2e8f0",
+                    paddingTop: "16px",
+                    display: "grid",
+                    gap: "12px",
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: "13px",
+                      fontWeight: 900,
+                      color: "#0f172a",
+                      letterSpacing: "0.03em",
+                    }}
+                  >
+                    Supplier document actions
+                  </div>
+
+                  {uploadedDocuments.map((doc, index) => (
+                    <div
+                      key={`${doc.s3Key || doc.fileName}-${index}`}
+                      style={{
+                        border: "1px solid #e2e8f0",
+                        borderRadius: "16px",
+                        padding: "13px",
+                        background: "linear-gradient(180deg, #ffffff, #f8fafc)",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        gap: "14px",
+                        alignItems: "center",
+                        flexWrap: "wrap",
+                      }}
+                    >
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ fontWeight: 900, color: "#0f172a", wordBreak: "break-word" }}>
+                          {index + 1}. {doc.fileName}
+                        </div>
+                        <div style={{ marginTop: "5px", color: "#64748b", fontSize: "12px" }}>
+                          {doc.uploadedBy ? `Uploaded by: ${doc.uploadedBy}` : "Uploaded by: Supplier"}
+                          {doc.uploadedAt ? ` • ${doc.uploadedAt}` : ""}
+                        </div>
+                        {doc.supplierNote ? (
+                          <div style={{ marginTop: "7px", color: "#334155", fontSize: "13px" }}>
+                            <strong>Supplier note:</strong> {doc.supplierNote}
+                          </div>
+                        ) : null}
+                      </div>
+
+                      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                        <button
+                          type="button"
+                          className="premiumGhostBtn"
+                          onClick={() => handlePreviewSupplierDocument(doc)}
+                          disabled={!doc.downloadUrl && !doc.s3Key}
+                          style={{ minHeight: "38px", padding: "8px 12px" }}
+                        >
+                          Preview
+                        </button>
+
+                        <button
+                          type="button"
+                          className="formSaveBtn premiumFormSaveBtn"
+                          onClick={() => handleDownloadSupplierDocument(doc)}
+                          disabled={!doc.downloadUrl && !doc.s3Key}
+                          style={{ minHeight: "38px", padding: "8px 12px" }}
+                        >
+                          Download Document
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div
+                style={{
+                  border: "1px dashed #cbd5e1",
+                  borderRadius: "16px",
+                  padding: "16px",
+                  background: "#f8fafc",
+                  color: "#64748b",
+                }}
+              >
+                No supplier documents uploaded yet. Waiting for supplier submission.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="emailDraftFooter">
+        <div className="emailDraftFooterHint">
+          Engineer can review supplier uploaded documents here. Use Download Document to open the actual file from S3 using a presigned URL.
         </div>
 
         <div className="emailDraftFooterActions">
           <button type="button" className="premiumGhostBtn">
-            Upload Document
+            Request Changes
           </button>
-          <button type="button" className="formSaveBtn premiumFormSaveBtn">
-            Submit for Review
+          <button type="button" className="formSaveBtn premiumFormSaveBtn" disabled={!uploadedDocuments.length}>
+            Approve Supplier Submission
           </button>
         </div>
+      </div>
+    </div>
+  );
+};
+
+const SupplierTaskCard = ({ task, isEngineerView = false, user, sessionId, reviewMarkdownOverride = "", onUploadComplete, onSubmitComplete }) => {
+  if (!task) return null;
+
+  if (isEngineerView) {
+    return <EngineerSupplierTaskReviewCard task={task} user={user} sessionId={sessionId} reviewMarkdownOverride={reviewMarkdownOverride} />;
+  }
+
+  return <SupplierTaskUploadCard task={task} user={user} sessionId={sessionId} onUploadComplete={onUploadComplete} onSubmitComplete={onSubmitComplete} />;
+};
+
+
+/* ===============================
+   ✅ Supplier uploaded documents in chat markdown
+   Hides internal S3 key text and shows Preview / Download actions.
+   =============================== */
+const extractSupplierUploadedDocsFromMarkdown = (text = "") => {
+  const value = String(text || "").replace(/\r\n/g, "\n");
+  const lines = value.split("\n");
+  const docs = [];
+  let current = null;
+
+  const taskIdFromText =
+    value.match(/Supplier\s+Task\s*:\s*(TSK[A-Z]?#\d{8}#\d{6}-[A-Za-z0-9]+)/i)?.[1] ||
+    value.match(/Task\s+ID\s*:\s*(TSK[A-Z]?#\d{8}#\d{6}-[A-Za-z0-9]+)/i)?.[1] ||
+    value.match(/\b(TSK[A-Z]?#\d{8}#\d{6}-[A-Za-z0-9]+)\b/i)?.[1] ||
+    "";
+
+  const requestIdFromText =
+    value.match(/customer\s+request\s+(REQ[A-Z]?#\d{8}#\d{6}-[A-Za-z0-9]+)/i)?.[1] ||
+    value.match(/customer\s+request\s*:\s*(REQ[A-Z]?#\d{8}#\d{6}-[A-Za-z0-9]+)/i)?.[1] ||
+    value.match(/\b(REQ[A-Z]?#\d{8}#\d{6}-[A-Za-z0-9]+)\b/i)?.[1] ||
+    "";
+
+  const startNewDoc = (fileName = "") => {
+    if (current) docs.push(current);
+    current = {
+      fileName: String(fileName || "Supplier document").trim(),
+      uploadedAt: "",
+      uploadedBy: "",
+      supplierNote: "",
+      s3Key: "",
+      fileType: "application/octet-stream",
+      taskId: taskIdFromText,
+      requestId: requestIdFromText,
+    };
+  };
+
+  for (const rawLine of lines) {
+    const clean = String(rawLine || "").trim();
+    if (!clean) continue;
+
+    const fileMatch =
+      clean.match(/^\s*\d+\.\s+\*\*(.+?)\*\*/i) ||
+      clean.match(/^\s*\d+\.\s+([^\n]+?\.(?:pdf|png|jpe?g|webp|gif|docx?|xlsx?|csv|txt|zip|pptx?))\s*$/i);
+
+    if (fileMatch?.[1]) {
+      startNewDoc(fileMatch[1]);
+      continue;
+    }
+
+    if (!current) continue;
+
+    const uploadedAt = clean.match(/Uploaded\s+At\s*:\s*(.+)$/i);
+    if (uploadedAt?.[1]) {
+      current.uploadedAt = uploadedAt[1].replace(/`/g, "").trim();
+      continue;
+    }
+
+    const uploadedBy = clean.match(/Uploaded\s+By\s*:\s*(.+)$/i);
+    if (uploadedBy?.[1]) {
+      current.uploadedBy = uploadedBy[1].replace(/`/g, "").trim();
+      continue;
+    }
+
+    const supplierNote = clean.match(/Supplier\s+Note\s*:\s*(.+)$/i);
+    if (supplierNote?.[1]) {
+      current.supplierNote = supplierNote[1].replace(/`/g, "").trim();
+      continue;
+    }
+
+    const s3Key = clean.match(/S3\s+Key\s*:\s*`?([^`]+)`?/i);
+    if (s3Key?.[1]) {
+      current.s3Key = s3Key[1]
+        .replace(/^[-*•]+\s*/, "")
+        .replace(/`/g, "")
+        .trim();
+      continue;
+    }
+  }
+
+  if (current) docs.push(current);
+
+  return docs.filter((doc) => doc.fileName && doc.s3Key);
+};
+
+const removeSupplierS3KeyLinesFromMarkdown = (text = "") => {
+  return String(text || "")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .filter((line) => !/S3\s+Key\s*:/i.test(line))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+};
+
+const extractSupplierUploadedDocsFromArtifact = (artifact = {}) => {
+  const tasks = Array.isArray(artifact?.supplierTasks)
+    ? artifact.supplierTasks
+    : Array.isArray(artifact?.SupplierTasks)
+    ? artifact.SupplierTasks
+    : artifact?.supplierTask
+    ? [artifact.supplierTask]
+    : artifact?.taskItem
+    ? [artifact.taskItem]
+    : artifact?.task
+    ? [artifact.task]
+    : artifact?.type === "supplier_task"
+    ? [artifact]
+    : [];
+
+  const docs = [];
+
+  for (const task of tasks) {
+    const detail = task?.TaskDetail || task?.taskDetail || {};
+    const taskId = String(
+      task?.TaskId ||
+        task?.taskId ||
+        artifact?.taskId ||
+        artifact?.TaskId ||
+        ""
+    ).trim();
+    const requestId = String(
+      detail?.RequestId ||
+        detail?.requestId ||
+        task?.TaskAssignedBy ||
+        task?.assignedBy ||
+        task?.RequestId ||
+        task?.requestId ||
+        artifact?.requestId ||
+        artifact?.RequestId ||
+        ""
+    ).trim();
+
+    normalizeSupplierUploadedDocuments({
+      ...(task || {}),
+      taskId,
+      TaskId: taskId,
+      requestId,
+      RequestId: requestId,
+      taskItem: task,
+      TaskDetail: detail,
+    }).forEach((doc, index) => {
+      docs.push({
+        ...doc,
+        taskId: doc.taskId || taskId,
+        requestId: doc.requestId || requestId,
+        index: docs.length + index,
+      });
+    });
+  }
+
+  return docs;
+};
+
+const mergeMarkdownDocsWithArtifactDocs = (markdownDocs = [], artifactDocs = []) => {
+  if (!artifactDocs.length) return markdownDocs;
+  if (!markdownDocs.length) return artifactDocs;
+
+  const used = new Set();
+
+  return markdownDocs.map((doc, index) => {
+    const normalizedName = String(doc?.fileName || "").trim().toLowerCase();
+    let matchIndex = artifactDocs.findIndex((candidate, candidateIndex) => {
+      if (used.has(candidateIndex)) return false;
+      return (
+        String(candidate?.fileName || "").trim().toLowerCase() === normalizedName
+      );
+    });
+
+    if (matchIndex < 0 && artifactDocs[index] && !used.has(index)) {
+      matchIndex = index;
+    }
+
+    if (matchIndex < 0) return doc;
+
+    used.add(matchIndex);
+    const match = artifactDocs[matchIndex] || {};
+
+    return {
+      ...match,
+      ...doc,
+      s3Key: doc.s3Key || match.s3Key || match.S3Key || "",
+      s3Bucket: doc.s3Bucket || match.s3Bucket || match.S3Bucket || "",
+      fileType: doc.fileType || match.fileType || match.FileType || "application/octet-stream",
+      fileSize: doc.fileSize || match.fileSize || match.FileSize || "",
+      taskId: doc.taskId || match.taskId || match.TaskId || "",
+      requestId: doc.requestId || match.requestId || match.RequestId || "",
+      downloadUrl: doc.downloadUrl || match.downloadUrl || match.DownloadUrl || "",
+    };
+  });
+};
+
+const hasSupplierUploadedDocsMarkdown = (text = "", artifact = null) => {
+  const value = String(text || "");
+  const hasSupplierDocsText = /Supplier\s+uploaded\s+documents/i.test(value);
+  if (!hasSupplierDocsText) return false;
+
+  const markdownDocs = extractSupplierUploadedDocsFromMarkdown(value);
+  const artifactDocs = extractSupplierUploadedDocsFromArtifact(artifact || {});
+
+  return markdownDocs.length > 0 || artifactDocs.length > 0;
+};
+
+const SupplierUploadedDocsMarkdownCard = ({ text, artifact, user, sessionId }) => {
+  const markdownDocs = extractSupplierUploadedDocsFromMarkdown(text);
+  const artifactDocs = extractSupplierUploadedDocsFromArtifact(artifact || {});
+  const docs = mergeMarkdownDocsWithArtifactDocs(markdownDocs, artifactDocs);
+  const cleanText = removeSupplierS3KeyLinesFromMarkdown(text);
+
+  const getSupplierDocumentUrl = async (doc) => {
+    const token = await getAccessToken();
+    const taskId = String(doc?.taskId || "").trim();
+    const requestId = String(doc?.requestId || "").trim();
+    const activeSessionId = String(sessionId || taskId || "").trim();
+    const userEmail = String(user?.email || "").trim();
+    const fileName = String(doc?.fileName || "supplier-document").trim();
+    const fileType = String(doc?.fileType || "application/octet-stream").trim();
+    const s3Key = String(doc?.s3Key || doc?.S3Key || "").trim();
+    const existingDownloadUrl = String(
+      doc?.downloadUrl || doc?.DownloadUrl || doc?.url || doc?.Url || ""
+    ).trim();
+
+    if (existingDownloadUrl) {
+      return existingDownloadUrl;
+    }
+
+    if (!s3Key) {
+      throw new Error("No S3 key found for this supplier document.");
+    }
+
+    try {
+      const res = await downloadSupplierTaskFile(
+        {
+          taskId,
+          requestId,
+          sessionId: activeSessionId,
+          userId: userEmail,
+          fileName,
+          s3Key,
+          fileType,
+        },
+        token
+      );
+
+      const supplierUrl =
+        (typeof res === "string" ? res : "") ||
+        res?.downloadUrl ||
+        res?.url ||
+        res?.presignedUrl ||
+        res?.data?.downloadUrl ||
+        res?.payload?.downloadUrl ||
+        "";
+
+      if (supplierUrl) return supplierUrl;
+    } catch (supplierErr) {
+      console.warn(
+        "Supplier markdown document download endpoint failed, trying generic presign-download:",
+        supplierErr
+      );
+    }
+
+    const fallbackRes = await downloadFilePresigned(
+      {
+        userId: userEmail,
+        sessionId: activeSessionId,
+        fileName,
+        fileType,
+        s3Key,
+      },
+      token
+    );
+
+    const fallbackUrl =
+      fallbackRes?.downloadUrl ||
+      fallbackRes?.url ||
+      fallbackRes?.presignedUrl ||
+      fallbackRes?.data?.downloadUrl ||
+      fallbackRes?.payload?.downloadUrl ||
+      "";
+
+    if (!fallbackUrl) {
+      throw new Error("No download URL returned for supplier document.");
+    }
+
+    return fallbackUrl;
+  };
+
+  const handlePreview = async (doc) => {
+    try {
+      const url = await getSupplierDocumentUrl(doc);
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (e) {
+      console.error("Supplier markdown document preview failed:", e);
+      alert(e?.message || "Preview failed");
+    }
+  };
+
+  const handleDownload = async (doc) => {
+    try {
+      const url = await getSupplierDocumentUrl(doc);
+      const fileName = doc?.fileName || "supplier-document";
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } catch (e) {
+      console.error("Supplier markdown document download failed:", e);
+      alert(e?.message || "Download failed");
+    }
+  };
+
+  return (
+    <div className="supplierUploadedDocsMarkdownCard">
+      <MarkdownRenderer text={cleanText} />
+
+      <div
+        style={{
+          marginTop: "18px",
+          borderTop: "1px solid #e2e8f0",
+          paddingTop: "16px",
+          display: "grid",
+          gap: "12px",
+        }}
+      >
+        <div
+          style={{
+            fontSize: "13px",
+            fontWeight: 900,
+            color: "#0f172a",
+            letterSpacing: "0.03em",
+          }}
+        >
+          Supplier document actions
+        </div>
+
+        {docs.map((doc, index) => (
+          <div
+            key={`${doc.s3Key}-${index}`}
+            style={{
+              border: "1px solid #e2e8f0",
+              borderRadius: "16px",
+              padding: "13px",
+              background: "linear-gradient(180deg, #ffffff, #f8fafc)",
+              display: "flex",
+              justifyContent: "space-between",
+              gap: "14px",
+              alignItems: "center",
+              flexWrap: "wrap",
+            }}
+          >
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div style={{ fontWeight: 900, color: "#0f172a", wordBreak: "break-word" }}>
+                {index + 1}. {doc.fileName}
+              </div>
+              <div style={{ marginTop: "5px", color: "#64748b", fontSize: "12px" }}>
+                {doc.uploadedBy ? `Uploaded by: ${doc.uploadedBy}` : "Uploaded by: Supplier"}
+                {doc.uploadedAt ? ` • ${doc.uploadedAt}` : ""}
+              </div>
+              {doc.supplierNote ? (
+                <div style={{ marginTop: "7px", color: "#334155", fontSize: "13px" }}>
+                  <strong>Supplier note:</strong> {doc.supplierNote}
+                </div>
+              ) : null}
+            </div>
+
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+              <button
+                type="button"
+                className="premiumGhostBtn"
+                onClick={() => handlePreview(doc)}
+                style={{ minHeight: "38px", padding: "8px 12px" }}
+              >
+                Preview
+              </button>
+              <button
+                type="button"
+                className="formSaveBtn premiumFormSaveBtn"
+                onClick={() => handleDownload(doc)}
+                style={{ minHeight: "38px", padding: "8px 12px" }}
+              >
+                Download Document
+              </button>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -1783,7 +3427,7 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail }) => {
       kind: isSupplier ? "supplier_fmd_request" : localDraft?.kind || "customer_request_email",
       emailKind: isSupplier ? "supplier_fmd_request" : localDraft?.emailKind || "customer_request_email",
     });
-    setStatusMsg("Send action triggered.");
+    setStatusMsg(isSupplier ? "" : "Send action triggered.");
   };
 
   const accent = isSupplier
@@ -3379,6 +5023,12 @@ const ChatWindow = ({
   // on old chat text like "REQUEST-CONFIRMED".
   const [currentRequestStatusOverride, setCurrentRequestStatusOverride] = useState("");
 
+  // Engineering Supplier Task: the sidebar/card can contain an old task snapshot.
+  // Cache a fresh backend task summary so the Supplier Task card shows the same
+  // uploaded document list + Download buttons as the customer-request chat reply.
+  const [supplierTaskReviewMarkdownByTaskId, setSupplierTaskReviewMarkdownByTaskId] = useState({});
+  const [supplierTaskReviewLoadingKey, setSupplierTaskReviewLoadingKey] = useState("");
+
   const scrollRef = useRef(null);
   const textareaRef = useRef(null);
   const uploadBtnRef = useRef(null);
@@ -3386,6 +5036,7 @@ const ChatWindow = ({
   const chatIdRef = useRef(chat?.id);
   const visibleMessageCountRef = useRef(0);
   const customerRequestSearchSeqRef = useRef(0);
+  const supplierTaskAutoLoadedRef = useRef(new Set());
 
   const getActiveSessionId = useCallback(() => {
     // Prefer React prop over ref. The ref can lag behind immediately after
@@ -3404,6 +5055,12 @@ const ChatWindow = ({
       active.includes("monitoring & status")
     );
   }, [chat?.id, chat?.title]);
+
+  const isEngineerProfile = useMemo(() => isEngineeringProfileUser(user), [user]);
+
+  const isActiveSupplierTaskSession = useMemo(() => {
+    return isSupplierTaskSessionId(chat?.id);
+  }, [chat?.id]);
 
   const isCustomerRequestSession = useCallback((sessionId = "") => {
     return /^REQ[A-Z]?#\d{8}#\d{6}-/i.test(String(sessionId || ""));
@@ -3457,6 +5114,14 @@ const ChatWindow = ({
     setProcessingCustomerReply(false);
     setSubmittingEmailReview(false);
     setCurrentRequestStatusOverride("");
+    setSupplierTaskReviewLoadingKey("");
+
+    if (isSupplierTaskSessionId(chat?.id)) {
+      setShowForm(false);
+      setFormDraft(null);
+      setGeneratingEmailDraft(false);
+      setSavingForm(false);
+    }
   }, [chat?.id]);
 
   useEffect(() => {
@@ -3602,22 +5267,35 @@ const ChatWindow = ({
     });
 
   const hasActiveCustomerFlow = useMemo(() => {
+    if (isActiveSupplierTaskSession) return false;
+
     const raw = chat?.messages || [];
     return raw.some(
       (m) =>
         m?.flowType === "customer_request" ||
         isCustomerFlowQuestionText(extractMessageText(m))
     );
-  }, [chat?.messages]);
+  }, [chat?.messages, isActiveSupplierTaskSession]);
 
   const cleanedMessages = useMemo(() => {
     const raw = chat?.messages || [];
     const activeRequestId = extractRequestIdFromSessionId(chat?.id || "");
 
+    // Supplier task safety: keep supplier task/card messages and hide only stale
+    // customer request flow prompts that can remain from the previous session.
+    // This avoids both problems: old customer flow overlay and blank screen.
+    const sourceMessages = isActiveSupplierTaskSession
+      ? raw.filter(
+          (item) =>
+            !isCustomerRequestFlowOnlyMessage(item) &&
+            !isSupplierTaskAutoChatNoiseMessage(item)
+        )
+      : raw;
+
     const dedupedRaw = [];
     const seenEmailReviewKeys = new Set();
 
-    for (const item of raw) {
+    for (const item of sourceMessages) {
       const previous = dedupedRaw[dedupedRaw.length - 1];
       if (isSameCustomerFlowCard(previous, item)) {
         continue;
@@ -3732,12 +5410,69 @@ const ChatWindow = ({
 
       return true;
     });
-  }, [chat?.messages, chat?.id, isCustomerRequestStarterSession]);
+  }, [chat?.messages, chat?.id, isCustomerRequestStarterSession, isActiveSupplierTaskSession]);
 
   const normalizedMessages = useMemo(
     () => normalize(cleanedMessages),
     [cleanedMessages, getPreferredCustomerEmail]
   );
+
+  const activeSupplierTaskForReview = useMemo(() => {
+    if (!isActiveSupplierTaskSession) return null;
+
+    const fromMessages = normalizedMessages
+      .map((m) => m?.supplierTask)
+      .find((task) => task && String(task?.taskId || "").trim());
+
+    if (fromMessages) return fromMessages;
+
+    const chatTaskLike = {
+      ...(chat || {}),
+      ...(chat?.supplierTask || {}),
+      ...(chat?.task || {}),
+      ...(chat?.taskItem || {}),
+      ...(chat?.metadata || {}),
+      sessionId: chat?.id,
+      SessionId: chat?.id,
+      taskId: chat?.id,
+      TaskId: chat?.id,
+    };
+
+    return normalizeSupplierTask({ supplierTask: chatTaskLike });
+  }, [isActiveSupplierTaskSession, normalizedMessages, chat]);
+
+  const activeSupplierTaskReviewKey = useMemo(() => {
+    return String(
+      activeSupplierTaskForReview?.taskId ||
+        activeSupplierTaskForReview?.TaskId ||
+        chat?.id ||
+        ""
+    ).trim();
+  }, [activeSupplierTaskForReview, chat?.id]);
+
+  const activeSupplierTaskReviewMarkdown = useMemo(() => {
+    if (!activeSupplierTaskReviewKey) return "";
+    return String(supplierTaskReviewMarkdownByTaskId?.[activeSupplierTaskReviewKey] || "").trim();
+  }, [supplierTaskReviewMarkdownByTaskId, activeSupplierTaskReviewKey]);
+
+  useEffect(() => {
+    // Important:
+    // Engineer supplier review is now a real workflow card loaded from the
+    // Supplier Task data, not a normal AI chat prompt.
+    //
+    // Previously this effect sent:
+    // "show my pending task for supplier task ... with uploaded documents"
+    // to /chat. Bedrock then replied with the generic
+    // "I do not have capability..." message after 1-2 seconds.
+    //
+    // Keep this effect only as a cleanup guard so switching into/out of a
+    // supplier task never triggers that old auto prompt again.
+    if (!isEngineerProfile || !isActiveSupplierTaskSession) return;
+
+    setSupplierTaskReviewLoadingKey((current) =>
+      current === activeSupplierTaskReviewKey ? "" : current
+    );
+  }, [isEngineerProfile, isActiveSupplierTaskSession, activeSupplierTaskReviewKey]);
 
   const hasVisibleCustomerFlowCard = useMemo(() => {
     return normalizedMessages.some(
@@ -3866,6 +5601,14 @@ const ChatWindow = ({
   };
 
   useEffect(() => {
+    if (isActiveSupplierTaskSession) {
+      setShowForm(false);
+      setFormDraft(null);
+      setFormSaveMsg("");
+      setFormInsertIndex(null);
+      return;
+    }
+
     if (hasValidFormState(formState)) {
       const hydrated = buildCustomerRequestFormDraft(formState);
 
@@ -3890,7 +5633,7 @@ const ChatWindow = ({
     setFormDraft(null);
     setFormSaveMsg("");
     setFormInsertIndex(null);
-  }, [formState, chat?.id, chat?.messages]);
+  }, [formState, chat?.id, chat?.messages, isActiveSupplierTaskSession]);
 
   const pushLocalCustomerRequestSuggestion = useCallback(
     ({
@@ -4008,6 +5751,21 @@ const ChatWindow = ({
   const renderArtifact = (msg) => {
     if (!msg?.artifact) return null;
 
+    const artifact = msg.artifact || {};
+    const artifactType = String(artifact?.type || artifact?.artifactType || "")
+      .toLowerCase()
+      .trim();
+    const artifactTitle = String(artifact?.artifact_id || artifact?.title || "").trim();
+    const artifactContent =
+      typeof artifact?.content === "string" ? artifact.content.trim() : "";
+
+    // Hide empty/generic backend artifact placeholders like
+    // "Generated Artifact • text • permanent".
+    // These are metadata-only artifacts and should not render as a visible card.
+    if (!artifactContent) {
+      return null;
+    }
+
     return (
       <div className="artifact-card">
         <div className="artifact-title">
@@ -4102,6 +5860,160 @@ const ChatWindow = ({
 
   const isStatusRequestText = (value = "") =>
     /\b(status|dashboard|monitoring)\b/i.test(String(value || ""));
+
+  useEffect(() => {
+    if (!isEngineerProfile || !isActiveSupplierTaskSession) return;
+
+    const taskId = String(activeSupplierTaskReviewKey || getActiveSessionId() || "").trim();
+    if (!taskId || !user?.email) return;
+
+    // If this exact supplier-task review markdown is already loaded, do not call backend again.
+    // Important: a stale fallback card can have supplierTask data but 0 uploaded documents;
+    // that must NOT block this backend load, because the task store may now contain uploads.
+    const existingReviewMarkdown = String(
+      supplierTaskReviewMarkdownByTaskId?.[taskId] || ""
+    ).trim();
+
+    const alreadyHasLoadedTaskWithDocs = normalizedMessages.some((m) => {
+      const existingTaskId = String(
+        m?.supplierTask?.taskId ||
+          m?.supplierTask?.TaskId ||
+          m?.artifact?.taskId ||
+          m?.artifact?.TaskId ||
+          ""
+      ).trim();
+
+      if (existingTaskId !== taskId) return false;
+
+      const docs = normalizeSupplierUploadedDocuments(
+        m?.supplierTask || m?.artifact || m || {}
+      );
+
+      return docs.length > 0;
+    });
+
+    if (existingReviewMarkdown || alreadyHasLoadedTaskWithDocs) return;
+    if (supplierTaskAutoLoadedRef.current.has(taskId)) return;
+
+    let cancelled = false;
+    supplierTaskAutoLoadedRef.current.add(taskId);
+
+    const loadSupplierTaskReview = async () => {
+      try {
+        setSupplierTaskReviewLoadingKey(taskId);
+        const token = await getAccessToken();
+
+        // Silent workflow load: engineer should not type anything in Supplier Task section.
+        // Backend handles this as a supplier-task workflow route and must not send it to Bedrock.
+        const res = await sendChatMessage(
+          taskId,
+          "__LOAD_SUPPLIER_TASK_REVIEW__",
+          user.email,
+          token,
+          [],
+          false
+        );
+
+        if (cancelled) return;
+
+        const rawReplyText = getBackendReplyText(res) || "";
+        const replyText = isSupplierTaskGenericNoAccessReplyText(rawReplyText)
+          ? ""
+          : rawReplyText || "Supplier task loaded.";
+
+        // Store the exact same markdown summary used in the Customer Request flow,
+        // so the top Supplier Task card immediately shows uploaded documents +
+        // download/preview buttons without the engineer typing anything.
+        if (replyText) {
+          setSupplierTaskReviewMarkdownByTaskId((prev) => ({
+            ...(prev || {}),
+            [taskId]: replyText,
+          }));
+        }
+
+        const artifact =
+          res?.artifact ||
+          res?.Artifact ||
+          res?.payload?.artifact ||
+          res?.data?.artifact ||
+          {
+            type: "supplier_task",
+            taskId,
+            taskItem: res?.supplierTask || res?.taskItem || {},
+            uploadedDocuments:
+              res?.uploadedDocuments ||
+              res?.supplierUploadedDocuments ||
+              [],
+          };
+
+        const taskItem =
+          res?.supplierTask ||
+          res?.taskItem ||
+          artifact?.taskItem ||
+          artifact?.TaskItem ||
+          {};
+
+        const uploadedDocuments =
+          res?.uploadedDocuments ||
+          res?.supplierUploadedDocuments ||
+          artifact?.uploadedDocuments ||
+          artifact?.supplierUploadedDocuments ||
+          [];
+
+        const hasUsefulSupplierPayload =
+          normalizeSupplierUploadedDocuments({
+            ...(artifact || {}),
+            taskItem,
+            uploadedDocuments,
+            supplierUploadedDocuments: uploadedDocuments,
+          }).length > 0 ||
+          String(artifact?.type || "").toLowerCase() === "supplier_task" ||
+          Boolean(res?.supplierTask || res?.taskItem);
+
+        if (replyText || hasUsefulSupplierPayload) {
+          addMessage({
+            id: `engineer-supplier-review-${taskId}-${Date.now()}`,
+            sender: "bot",
+            role: "assistant",
+            text: replyText || "Supplier task loaded.",
+            artifact,
+            supplierTask: {
+              ...(artifact || {}),
+              type: "supplier_task",
+              taskId,
+              TaskId: taskId,
+              taskItem,
+              uploadedDocuments,
+              supplierUploadedDocuments: uploadedDocuments,
+            },
+          });
+        }
+      } catch (e) {
+        console.error("Auto-load supplier task review failed:", e);
+        supplierTaskAutoLoadedRef.current.delete(taskId);
+      } finally {
+        if (!cancelled) {
+          setSupplierTaskReviewLoadingKey((current) =>
+            current === taskId ? "" : current
+          );
+        }
+      }
+    };
+
+    loadSupplierTaskReview();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    isEngineerProfile,
+    isActiveSupplierTaskSession,
+    activeSupplierTaskReviewKey,
+    user?.email,
+    normalizedMessages,
+    supplierTaskReviewMarkdownByTaskId,
+    getActiveSessionId,
+  ]);
 
   const adoptSessionFromResponse = async (res, fallbackSessionId) => {
     return adoptSessionFromResponseSafely(res, fallbackSessionId);
@@ -4948,6 +6860,75 @@ const ChatWindow = ({
     );
   };
 
+  const handleSupplierTaskUpdated = useCallback(
+    async (res = {}) => {
+      const updatedTask =
+        res?.supplierTask ||
+        res?.task ||
+        res?.item ||
+        res?.taskItem ||
+        null;
+
+      const taskId = String(
+        updatedTask?.TaskId ||
+          updatedTask?.taskId ||
+          res?.taskId ||
+          res?.TaskId ||
+          ""
+      ).trim();
+
+      if (taskId) {
+        supplierTaskAutoLoadedRef.current.delete(taskId);
+
+        const replyText = getBackendReplyText(res);
+        if (replyText) {
+          setSupplierTaskReviewMarkdownByTaskId((prev) => ({
+            ...(prev || {}),
+            [taskId]: replyText,
+          }));
+        }
+
+        updateMessages((prev) =>
+          (prev || []).map((m) => {
+            const currentTask = normalizeSupplierTask(m);
+            if (!currentTask || String(currentTask.taskId || "").trim() !== taskId) {
+              return m;
+            }
+
+            const mergedArtifact = {
+              ...(m.artifact || {}),
+              type: "supplier_task",
+              taskItem: updatedTask || currentTask.taskItem || {},
+              taskId,
+              taskStatus:
+                updatedTask?.TaskStatus ||
+                updatedTask?.taskStatus ||
+                res?.taskStatus ||
+                res?.TaskStatus ||
+                currentTask.taskStatus,
+            };
+
+            return {
+              ...m,
+              artifact: mergedArtifact,
+              supplierTask: normalizeSupplierTask({
+                ...m,
+                artifact: mergedArtifact,
+                supplierTask: {
+                  ...(m.supplierTask || {}),
+                  taskItem: updatedTask || currentTask.taskItem || {},
+                },
+              }),
+            };
+          })
+        );
+      }
+
+      await refreshSidebar?.();
+    },
+    [updateMessages, refreshSidebar]
+  );
+
   const handleSendEmailDraft = async (draft) => {
     try {
       const to = String(draft?.to || "").trim();
@@ -5649,15 +7630,35 @@ const ChatWindow = ({
   const hasUploading = pendingAttachments.some((a) => a.uploading);
 
   const shouldShowWelcome =
+    !isActiveSupplierTaskSession &&
     !isCustomerRequestStarterSession &&
     (!cleanedMessages || cleanedMessages.length === 0);
 
   const showInlineCustomerStarter =
+    !isActiveSupplierTaskSession &&
     isCustomerRequestStarterSession &&
     !showForm &&
     !hasActiveCustomerFlow &&
     !hasVisibleCustomerFlowCard &&
     normalizedMessages.length === 0;
+
+  const supplierTaskFallbackMessage = useMemo(() => {
+    if (!isActiveSupplierTaskSession || normalizedMessages.length > 0) return null;
+
+    const chatTaskLike = {
+      ...(chat || {}),
+      ...(chat?.supplierTask || {}),
+      ...(chat?.task || {}),
+      ...(chat?.taskItem || {}),
+      ...(chat?.metadata || {}),
+      sessionId: chat?.id,
+      SessionId: chat?.id,
+      taskId: chat?.id,
+      TaskId: chat?.id,
+    };
+
+    return buildSupplierTaskFallbackMessage(getActiveSessionId(), chatTaskLike);
+  }, [isActiveSupplierTaskSession, normalizedMessages.length, getActiveSessionId, chat]);
 
   // Manual customer reply process is disabled. Customer replies should come
   // only from the mailbox poller / EMAIL-REVIEW workflow.
@@ -5669,6 +7670,7 @@ const ChatWindow = ({
   );
 
   const canShowEmailReviewActionCard = useMemo(() => {
+    if (isActiveSupplierTaskSession) return false;
     if (!hasEmailReviewSignal(normalizedMessages)) return false;
 
     const alreadySubmitted = normalizedMessages.some((m) => {
@@ -5681,7 +7683,7 @@ const ChatWindow = ({
     });
 
     return !alreadySubmitted;
-  }, [normalizedMessages]);
+  }, [normalizedMessages, isActiveSupplierTaskSession]);
 
   const renderFormMessageRow = (key) => (
     <div key={key} className="msg-row bot">
@@ -5773,13 +7775,37 @@ const ChatWindow = ({
 
             {shouldRenderFormAtTop && renderFormMessageRow("inline-form-top")}
 
+            {supplierTaskFallbackMessage && (
+              <div className="msg-row bot">
+                <div className="msg-bubble">
+                  <SupplierTaskCard
+                    task={supplierTaskFallbackMessage.supplierTask}
+                    isEngineerView={isEngineerProfile}
+                    user={user}
+                    sessionId={getActiveSessionId()}
+                    reviewMarkdownOverride={activeSupplierTaskReviewMarkdown}
+                    onUploadComplete={handleSupplierTaskUpdated}
+                    onSubmitComplete={handleSupplierTaskUpdated}
+                  />
+                </div>
+              </div>
+            )}
+
             {normalizedMessages.map((m, index) => {
               const workflowAnchorId = isRequestMonitoringSession
                 ? null
                 : workflowAnchorIdsByMessageIndex[index];
 
+              const supplierTaskDocsCount = m?.supplierTask
+                ? normalizeSupplierUploadedDocuments(m.supplierTask).length
+                : 0;
+
+              const shouldRenderSupplierTaskCard =
+                !!m?.supplierTask &&
+                (isActiveSupplierTaskSession || supplierTaskDocsCount > 0);
+
               return (
-                <React.Fragment key={m.id || index}>
+                <React.Fragment key={`${chat?.id || "chat"}-${m.id || "msg"}-${index}`}>
                   {showForm &&
                     formDraft &&
                     computedFormInsertIndex === index &&
@@ -5796,13 +7822,28 @@ const ChatWindow = ({
                         onSelectOption={handleFlowOptionSelect}
                         onSubmitManualInput={handleManualFlowSubmit}
                       />
-                    ) : m.supplierTask ? (
-                      <SupplierTaskCard task={m.supplierTask} />
                     ) : m.emailDraft ? (
                       <EmailDraftCard
                         draft={m.emailDraft}
                         onSaveDraft={handleSaveEmailDraft}
                         onSendEmail={handleSendEmailDraft}
+                      />
+                    ) : shouldRenderSupplierTaskCard ? (
+                      <SupplierTaskCard
+                        task={m.supplierTask}
+                        isEngineerView={isEngineerProfile}
+                        user={user}
+                        sessionId={getActiveSessionId()}
+                        reviewMarkdownOverride={activeSupplierTaskReviewMarkdown}
+                        onUploadComplete={handleSupplierTaskUpdated}
+                        onSubmitComplete={handleSupplierTaskUpdated}
+                      />
+                    ) : hasSupplierUploadedDocsMarkdown(m.text || "", m.artifact) ? (
+                      <SupplierUploadedDocsMarkdownCard
+                        text={m.text || ""}
+                        artifact={m.artifact}
+                        user={user}
+                        sessionId={getActiveSessionId()}
                       />
                     ) : (
                       <MarkdownRenderer
@@ -5810,7 +7851,13 @@ const ChatWindow = ({
                         onRequestRowClick={handleRequestRowClick}
                       />
                     )}
-                    {!m.emailDraft && !m.supplierTask && renderArtifact(m)}
+                    {!m.emailDraft &&
+                      !m.supplierTask &&
+                      !m.flowType &&
+                      !hasSupplierUploadedDocsMarkdown(m.text || "", m.artifact) &&
+                      !isPreparedFormMessage(m.text || "") &&
+                      !isCustomerFlowQuestionText(m.text || "") &&
+                      renderArtifact(m)}
                     {renderAttachments(m.attachments)}
                     </div>
                   </div>

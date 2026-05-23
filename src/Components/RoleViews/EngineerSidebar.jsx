@@ -25,6 +25,21 @@ const EngineerSidebar = ({
     localStorage.getItem("agentMode") === "true"
   );
 
+  // Local optimistic "seen" tracking:
+  // As soon as the engineer opens a highlighted supplier task, remove the
+  // yellow highlighter from the sidebar immediately. Backend can persist the
+  // seen flag when the task details are loaded.
+  const [locallySeenSupplierTaskIds, setLocallySeenSupplierTaskIds] = useState(() => {
+    try {
+      const saved = JSON.parse(
+        localStorage.getItem("engineerSeenSupplierTasks") || "[]"
+      );
+      return new Set(Array.isArray(saved) ? saved : []);
+    } catch (e) {
+      return new Set();
+    }
+  });
+
   useEffect(() => {
     if (typeof agentMode === "boolean") {
       setLocalAgentMode(agentMode);
@@ -174,6 +189,140 @@ const EngineerSidebar = ({
     }
 
     return { display, hover };
+  };
+
+
+  const getSupplierUploadedDocumentsCount = (item = {}) => {
+    const possibleArrays = [
+      item?.uploadedDocuments,
+      item?.UploadedDocuments,
+      item?.supplierUploadedDocuments,
+      item?.SupplierUploadedDocuments,
+      item?.supplierUploads,
+      item?.SupplierUploads,
+      item?.uploadedFiles,
+      item?.UploadedFiles,
+      item?.documents,
+      item?.Documents,
+      item?.taskItem?.UploadedDocuments,
+      item?.taskItem?.SupplierUploadedDocuments,
+      item?.TaskItem?.UploadedDocuments,
+      item?.TaskItem?.SupplierUploadedDocuments,
+      item?.TaskDetail?.UploadedDocuments,
+      item?.TaskDetail?.SupplierUploadedDocuments,
+      item?.taskDetail?.uploadedDocuments,
+      item?.taskDetail?.supplierUploadedDocuments,
+    ];
+
+    for (const value of possibleArrays) {
+      if (Array.isArray(value)) return value.length;
+    }
+
+    const directCount =
+      item?.uploadedDocumentsCount ??
+      item?.UploadedDocumentsCount ??
+      item?.supplierUploadedDocumentsCount ??
+      item?.SupplierUploadedDocumentsCount ??
+      item?.uploadCount ??
+      item?.UploadCount;
+
+    const numericCount = Number(directCount || 0);
+    return Number.isFinite(numericCount) ? numericCount : 0;
+  };
+
+  const hasEngineerSeenSupplierTask = (item = {}) => {
+    const seenValue =
+      item?.EngineerReviewSeen ??
+      item?.engineerReviewSeen ??
+      item?.EngineerSeen ??
+      item?.engineerSeen ??
+      item?.isSeenByEngineer ??
+      item?.seenByEngineer ??
+      item?.reviewSeen;
+
+    if (typeof seenValue === "boolean") return seenValue;
+
+    const normalizedSeen = normalizeText(seenValue);
+    if (["true", "yes", "y", "1", "seen"].includes(normalizedSeen)) {
+      return true;
+    }
+
+    return Boolean(item?.EngineerViewedAt || item?.engineerViewedAt);
+  };
+
+  const getSupplierTaskIdentity = (item = {}) => {
+    return String(
+      item?.sessionId ||
+        item?.SessionId ||
+        item?.taskId ||
+        item?.TaskId ||
+        item?.id ||
+        ""
+    ).trim();
+  };
+
+  const shouldHighlightSupplierTask = (item = {}) => {
+    const sessionId = getSupplierTaskIdentity(item);
+    if (!sessionId) return false;
+
+    if (activeId === sessionId) return false;
+    if (locallySeenSupplierTaskIds.has(sessionId)) return false;
+    if (hasEngineerSeenSupplierTask(item)) return false;
+
+    const explicitNewFlag =
+      item?.hasNewSupplierUpload ??
+      item?.HasNewSupplierUpload ??
+      item?.newSupplierUpload ??
+      item?.NewSupplierUpload ??
+      item?.supplierUploadPendingReview ??
+      item?.SupplierUploadPendingReview ??
+      item?.needsEngineerReview ??
+      item?.NeedsEngineerReview;
+
+    if (explicitNewFlag === true) return true;
+    if (["true", "yes", "y", "1"].includes(normalizeText(explicitNewFlag))) {
+      return true;
+    }
+
+    const status = normalizeText(
+      item?.taskStatus ||
+        item?.TaskStatus ||
+        item?.status ||
+        item?.Status ||
+        item?.requestStatus ||
+        item?.RequestStatus
+    );
+
+    const uploadedCount = getSupplierUploadedDocumentsCount(item);
+
+    return uploadedCount > 0 && ["review", "pending-review", "pending_review"].includes(status);
+  };
+
+  const markSupplierTaskSeenLocally = (sessionId) => {
+    const sid = String(sessionId || "").trim();
+    if (!sid) return;
+
+    setLocallySeenSupplierTaskIds((prev) => {
+      const next = new Set(prev);
+      next.add(sid);
+
+      try {
+        localStorage.setItem(
+          "engineerSeenSupplierTasks",
+          JSON.stringify(Array.from(next))
+        );
+      } catch (e) {
+        // localStorage can fail in private mode; sidebar should still work.
+      }
+
+      return next;
+    });
+  };
+
+  const handleSupplierTaskClick = (item) => {
+    const sessionId = getSupplierTaskIdentity(item);
+    markSupplierTaskSeenLocally(sessionId);
+    onSelectRequest?.(sessionId);
   };
 
   const myAssistantList = useMemo(() => {
@@ -344,14 +493,15 @@ const EngineerSidebar = ({
       <div className="role-list">
         {supplierTaskList.map((r) => {
           const { display, hover } = getDisplayAndHover(r);
+          const isHighlighted = shouldHighlightSupplierTask(r);
 
           return (
             <button
               key={r.sessionId}
               className={`role-list-item ${
                 activeId === r.sessionId ? "active" : ""
-              }`}
-              onClick={() => onSelectRequest?.(r.sessionId)}
+              } ${isHighlighted ? "supplier-task-highlighter" : ""}`}
+              onClick={() => handleSupplierTaskClick(r)}
               title={hover}
               type="button"
             >
