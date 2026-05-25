@@ -315,3 +315,29 @@
 .workflow-step-dot.current::before {
   background: #007aff;
 }
+
+
+.workflow-fulfillment-header {
+  position: absolute;
+  right: 0;
+  top: -38px;
+  display: flex;
+  justify-content: center;
+  width: max-content;
+  min-width: 190px;
+  pointer-events: none;
+}
+
+.workflow-fulfillment-title {
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.12);
+  color: #334155;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}

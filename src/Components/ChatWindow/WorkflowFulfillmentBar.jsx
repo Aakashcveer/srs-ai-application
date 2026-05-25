@@ -250,7 +250,16 @@ const WorkflowFulfillmentBar = ({
   };
 
   return (
-    <div className="workflow-fulfillment-wrapper">
+    <div
+      className="workflow-fulfillment-wrapper"
+      aria-label="Request Progress Timeline"
+    >
+      <div className="workflow-fulfillment-header">
+        <span className="workflow-fulfillment-title">
+          Request Progress Timeline
+        </span>
+      </div>
+
       <div className="workflow-fulfillment-card">
         <div className="workflow-track">
           <div
