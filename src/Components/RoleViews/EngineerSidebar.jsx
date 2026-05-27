@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from "react";
+import React, { useMemo, useState } from "react";
 import "./RoleSidebar.css";
 import { SunIcon, MoonIcon } from "../Sidebar/icons";
 
@@ -16,14 +16,8 @@ const EngineerSidebar = ({
   onLogout,
 
   onCreate,
-
-  agentMode,
-  onAgentModeChange,
 }) => {
   const [profileOpen, setProfileOpen] = useState(false);
-  const [localAgentMode, setLocalAgentMode] = useState(
-    localStorage.getItem("agentMode") === "true"
-  );
 
   // Local optimistic "seen" tracking:
   // As soon as the engineer opens a highlighted supplier task, remove the
@@ -40,17 +34,7 @@ const EngineerSidebar = ({
     }
   });
 
-  useEffect(() => {
-    if (typeof agentMode === "boolean") {
-      setLocalAgentMode(agentMode);
-    }
-  }, [agentMode]);
 
-  const handleAgentToggle = (checked) => {
-    setLocalAgentMode(checked);
-    localStorage.setItem("agentMode", String(checked));
-    onAgentModeChange?.(checked);
-  };
 
   const normalizeText = (value) => String(value || "").trim().toLowerCase();
 
@@ -430,7 +414,7 @@ const EngineerSidebar = ({
           ☰
         </button>
 
-        <div className="role-title">CHAT UI</div>
+        <div className="role-title">ASSURE-AI</div>
       </div>
 
       <div className="role-section-title">My Assistant</div>
@@ -518,18 +502,6 @@ const EngineerSidebar = ({
       </div>
 
       <div className="role-footer">
-        <div className="agent-toggle-wrapper">
-          <span className="agent-toggle-label">Agent Mode</span>
-
-          <label className="switch">
-            <input
-              type="checkbox"
-              checked={localAgentMode}
-              onChange={(e) => handleAgentToggle(e.target.checked)}
-            />
-            <span className="slider" />
-          </label>
-        </div>
 
         <div
           className="role-user"

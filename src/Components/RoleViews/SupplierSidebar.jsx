@@ -89,7 +89,7 @@ const SupplierSidebar = ({
           ☰
         </button>
 
-        <div className="role-title">CHAT UI</div>
+        <div className="role-title">ASSURE-AI</div>
       </div>
 
       <div className="role-section-title">Supplier Task</div>

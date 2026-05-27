@@ -3488,3 +3488,174 @@ body.dark .customer-request-suggestions::after {
 .msg-row.bot .msg-bubble:has(table) td strong {
   max-width: 100%;
 }
+
+
+
+
+/* ================================
+   Premium Dark Mode Fix
+   ================================ */
+
+body.dark,
+.dark {
+  background: #0b1020;
+  color: #e5e7eb;
+}
+
+.dark .chat-layout {
+  background:
+    radial-gradient(circle at 70% 10%, rgba(37, 99, 235, 0.12), transparent 28%),
+    radial-gradient(circle at 20% 85%, rgba(16, 185, 129, 0.08), transparent 28%),
+    #0b1020;
+}
+
+.dark .chat-window,
+.dark .chat-main,
+.dark .chat-content,
+.dark .messages,
+.dark .messages-container {
+  background: transparent !important;
+  color: #e5e7eb;
+}
+
+.dark .message.bot,
+.dark .bot-message,
+.dark .assistant-message,
+.dark .markdown-body,
+.dark .message-card {
+  background: #151f32 !important;
+  color: #e5e7eb !important;
+  border: 1px solid rgba(148, 163, 184, 0.22) !important;
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.28) !important;
+}
+
+.dark .message.bot p,
+.dark .bot-message p,
+.dark .assistant-message p,
+.dark .markdown-body p,
+.dark .markdown-body li,
+.dark .markdown-body span,
+.dark .markdown-body div {
+  color: #e5e7eb !important;
+}
+
+.dark .markdown-body strong,
+.dark .markdown-body b {
+  color: #f8fafc !important;
+}
+
+.dark .markdown-body a {
+  color: #60a5fa !important;
+}
+
+.dark .message.user,
+.dark .user-message {
+  background: linear-gradient(135deg, #1e293b, #111827) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(148, 163, 184, 0.22) !important;
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.25) !important;
+}
+
+.dark .chat-input-wrapper,
+.dark .input-area,
+.dark .chat-input-container {
+  background: rgba(15, 23, 42, 0.92) !important;
+  border: 1px solid rgba(148, 163, 184, 0.24) !important;
+  box-shadow: 0 -8px 35px rgba(0, 0, 0, 0.28) !important;
+}
+
+.dark .chat-input,
+.dark textarea,
+.dark input {
+  background: transparent !important;
+  color: #e5e7eb !important;
+}
+
+.dark .chat-input::placeholder,
+.dark textarea::placeholder,
+.dark input::placeholder {
+  color: #94a3b8 !important;
+}
+
+/* Customer request / email / workflow cards */
+.dark .customer-request-card,
+.dark .request-form-card,
+.dark .email-draft-card,
+.dark .supplier-review-card,
+.dark .workflow-card,
+.dark .premium-card {
+  background: #111827 !important;
+  color: #e5e7eb !important;
+  border: 1px solid rgba(148, 163, 184, 0.22) !important;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.32) !important;
+}
+
+.dark .customer-request-card input,
+.dark .request-form-card input,
+.dark .email-draft-card input,
+.dark .customer-request-card textarea,
+.dark .request-form-card textarea,
+.dark .email-draft-card textarea {
+  background: #0f172a !important;
+  color: #e5e7eb !important;
+  border-color: rgba(148, 163, 184, 0.28) !important;
+}
+
+.dark .customer-request-card label,
+.dark .request-form-card label,
+.dark .email-draft-card label {
+  color: #94a3b8 !important;
+}
+
+.dark .summary-panel,
+.dark .validation-panel,
+.dark .request-summary-card {
+  background: #111827 !important;
+  color: #e5e7eb !important;
+  border: 1px solid rgba(148, 163, 184, 0.22) !important;
+}
+
+.dark .validation-success,
+.dark .success-box {
+  background: rgba(16, 185, 129, 0.12) !important;
+  color: #86efac !important;
+  border-color: rgba(16, 185, 129, 0.28) !important;
+}
+
+/* Request Progress Timeline */
+.dark .workflow-fulfillment-bar,
+.dark .request-progress-timeline,
+.dark .timeline-wrapper {
+  background: rgba(15, 23, 42, 0.88) !important;
+  border: 1px solid rgba(148, 163, 184, 0.22) !important;
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.32) !important;
+}
+
+.dark .timeline-label,
+.dark .request-progress-title {
+  background: #e5e7eb !important;
+  color: #0f172a !important;
+}
+
+.dark .timeline-status-pill,
+.dark .workflow-status-pill {
+  background: #e5e7eb !important;
+  color: #0f172a !important;
+  border: 1px solid rgba(148, 163, 184, 0.25) !important;
+}
+
+/* Sidebar already dark, but improve borders */
+.dark .role-sidebar {
+  background: #0b1220 !important;
+  border-right: 1px solid rgba(148, 163, 184, 0.15) !important;
+}
+
+.dark .role-menu-item,
+.dark .role-list-item {
+  color: #e5e7eb !important;
+}
+
+.dark .role-menu-item.active,
+.dark .role-list-item.active {
+  background: rgba(148, 163, 184, 0.16) !important;
+}

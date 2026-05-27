@@ -3,10 +3,15 @@
   box-sizing: border-box;
 }
 
+html {
+  font-size: 13px; /* ← THE ONLY CHANGE: fixes zoom at 100% */
+}
+
 html, body, #root {
   height: 100%;
   margin: 0;
   padding: 0;
+  width: 100%;
 }
 
 body {
@@ -85,8 +90,6 @@ body.dark {
 }
 
 /* ---------------- REACT THEME CONTAINER ---------------- */
-/* Your Chat.jsx switches theme using: <div className={`layout ${theme}`}> */
-
 .layout.light {
   /* uses the default :root values */
 }
@@ -508,9 +511,6 @@ body.dark {
   border-bottom: 1px solid #e5edf5;
 }
 
-/* optional subtitle line */
-
-
 /* better table wrapper inside dashboard card */
 .table-scroll-wrap {
   width: 100%;
@@ -557,7 +557,7 @@ body.dark {
   min-width: 96px;
   padding: 8px 14px;
   border-radius: 999px;
-  font-size: 13px;
+  font-size: 10px;
   font-weight: 700;
   line-height: 1;
   border: 1px solid transparent;
@@ -733,7 +733,6 @@ body.dark {
   margin-top: 14px;
 }
 
-/* Divider under title */
 .msg-row.bot .msg-bubble .markdown-body {
   width: 100%;
 }

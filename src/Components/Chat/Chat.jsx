@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import Sidebar from "../Sidebar/Sidebar";
 import ChatWindow from "../ChatWindow/ChatWindow";
 import CustomerSidebar from "../RoleViews/CustomerSidebar";
@@ -132,6 +132,45 @@ const normalizeFormState = (state) => {
   return hasValidFormState(state) ? state : null;
 };
 
+const AUTO_REFRESH_INTERVAL_MS = 30000;
+
+const buildMessagesSignature = (items = []) => {
+  if (!Array.isArray(items) || !items.length) return "empty";
+
+  return items
+    .map((m) => {
+      const id = m?.id || "";
+      const role = m?.role || m?.sender || "";
+      const text =
+        typeof m?.text === "string"
+          ? m.text
+          : typeof m?.content === "string"
+          ? m.content
+          : Array.isArray(m?.content) && m.content[0]?.text
+          ? m.content[0].text
+          : "";
+
+      const artifactType = m?.artifact?.type || m?.Artifact?.type || "";
+      const taskStatus = m?.taskStatus || m?.TaskStatus || "";
+
+      return `${id}|${role}|${artifactType}|${taskStatus}|${String(text).slice(-180)}`;
+    })
+    .join("||");
+};
+
+const isAutoRefreshEligibleSession = (sessionId) => {
+  const sid = String(sessionId || "").trim().toLowerCase();
+
+  if (!sid) return false;
+  if (sid.startsWith("temp-")) return false;
+  if (sid === "default-chat") return false;
+  if (sid === "new customer request") return false;
+  if (sid === "new supplier request") return false;
+
+  return true;
+};
+
+
 const Chat = ({ theme, toggleTheme, onLogout }) => {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [user, setUser] = useState(null);
@@ -150,9 +189,15 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
   const [showIdleWarning, setShowIdleWarning] = useState(false);
   const [idleSecondsLeft, setIdleSecondsLeft] = useState(null);
   const [formStateMap, setFormStateMap] = useState({});
-  const [agentMode, setAgentMode] = useState(
-    localStorage.getItem("agentMode") === "true"
-  );
+
+  // Agent Mode is removed from the UI.
+  // Keep frontend fixed to normal /chat mode so old localStorage cannot call /agentcore-chat.
+  const agentMode = false;
+
+  const activeSessionIdRef = useRef(activeSessionId);
+  const userEmailRef = useRef("");
+  const messagesRef = useRef(messages);
+  const isAutoRefreshingRef = useRef(false);
 
   const role = String(user?.profile || user?.role || "")
     .toLowerCase()
@@ -161,6 +206,22 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
   const isCustomer = role === "customer";
   const isSupplier = role === "supplier";
   const isRoleBasedView = isEngineer || isCustomer || isSupplier;
+
+  useEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
+  }, [activeSessionId]);
+
+  useEffect(() => {
+    userEmailRef.current = user?.email || "";
+  }, [user?.email]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  useEffect(() => {
+    localStorage.setItem("agentMode", "false");
+  }, []);
 
   const normalizeMessages = (rawMessages = []) =>
     rawMessages.map((m, i) => {
@@ -726,13 +787,8 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
           }
         }
 
-        if (Array.isArray(data?.allowedModes)) {
-          const canUseAgent = data.allowedModes.includes("agent");
-          setAgentMode((prev) => (canUseAgent ? prev : false));
-          if (!canUseAgent) {
-            localStorage.setItem("agentMode", "false");
-          }
-        }
+        // Agent Mode UI has been removed. Always keep normal chat mode.
+        localStorage.setItem("agentMode", "false");
       } catch (err) {
         console.error("Initialise failed", err);
       }
@@ -740,6 +796,67 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
 
     init();
   }, []);
+
+
+  useEffect(() => {
+    if (!activeSessionId || !user?.email) return;
+    if (!isAutoRefreshEligibleSession(activeSessionId)) return;
+    if (isCustomerRequestHelperSessionId(activeSessionId)) return;
+
+    const refreshActiveSessionFromBackend = async () => {
+      const latestSessionId = activeSessionIdRef.current;
+      const latestUserEmail = userEmailRef.current;
+
+      if (!latestSessionId || !latestUserEmail) return;
+      if (!isAutoRefreshEligibleSession(latestSessionId)) return;
+      if (isCustomerRequestHelperSessionId(latestSessionId)) return;
+      if (document.visibilityState === "hidden") return;
+      if (isAutoRefreshingRef.current) return;
+
+      isAutoRefreshingRef.current = true;
+
+      try {
+        const token = await getAccessToken();
+        if (!token) return;
+
+        const data = await initialiseChat(token, latestUserEmail, latestSessionId);
+        const normalized = normalizeMessages(data.messages || []);
+
+        syncUserWithBackendProfile(user, data);
+        setSessions(normalizeSessionsPayload(data));
+
+        if (data?.formState) {
+          setFormForSession(latestSessionId, data.formState);
+        }
+
+        if (!normalized.length) return;
+
+        const currentSignature = buildMessagesSignature(messagesRef.current);
+        const nextSignature = buildMessagesSignature(normalized);
+
+        if (currentSignature !== nextSignature) {
+          setMessages(normalized);
+          messagesRef.current = normalized;
+
+          setSessionMessagesMap((prev) => ({
+            ...prev,
+            [latestSessionId]: normalized,
+          }));
+        }
+      } catch (err) {
+        console.warn("Auto refresh active session failed", err);
+      } finally {
+        isAutoRefreshingRef.current = false;
+      }
+    };
+
+    const interval = setInterval(
+      refreshActiveSessionFromBackend,
+      AUTO_REFRESH_INTERVAL_MS
+    );
+
+    return () => clearInterval(interval);
+  }, [activeSessionId, user?.email]);
 
   useEffect(() => {
     if (!activeSessionId) return;
@@ -1290,8 +1407,6 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
             theme={theme}
             toggleTheme={toggleTheme}
             onLogout={onLogout}
-            agentMode={agentMode}
-            onAgentModeChange={setAgentMode}
           />
         ) : isCustomer ? (
           <CustomerSidebar
@@ -1306,8 +1421,6 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
             theme={theme}
             toggleTheme={toggleTheme}
             onLogout={onLogout}
-            agentMode={agentMode}
-            onAgentModeChange={setAgentMode}
           />
         ) : (
           <SupplierSidebar
@@ -1321,11 +1434,6 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
             theme={theme}
             toggleTheme={toggleTheme}
             onLogout={onLogout}
-            agentMode={agentMode}
-            onAgentModeChange={(checked) => {
-              setAgentMode(checked);
-              localStorage.setItem("agentMode", String(checked));
-            }}
           />
         )
       ) : (
@@ -1341,7 +1449,6 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
           onLogout={onLogout}
           sidebarOpen={sidebarOpen}
           setSidebarOpen={setSidebarOpen}
-          onAgentModeChange={setAgentMode}
         />
       )}
 
