@@ -21,6 +21,7 @@ import {
   searchCustomerRequests,
   sendCustomerEmail,
   processCustomerReply,
+  triggerFmdAssessment,
   buildRequestConfirmationEmailMarkdown,
   uploadSupplierTaskFile,
   submitSupplierTaskForReview,
@@ -7136,7 +7137,11 @@ const ChatWindow = ({
       setSubmittingEmailReview(true);
 
       const token = await getAccessToken();
-      const res = await processCustomerReply(
+
+      // Step 1: keep the existing email-review update.
+      // This is NOT the old temporary assessment endpoint.
+      // It only records that engineer accepted the customer reply.
+      const reviewRes = await processCustomerReply(
         {
           sessionId: workingSessionId,
           userId: user?.email,
@@ -7148,28 +7153,86 @@ const ChatWindow = ({
         token
       );
 
+      const finalRequestId =
+        reviewRes?.requestId ||
+        reviewRes?.RequestId ||
+        extractRequestIdFromSessionId(workingSessionId);
+
+      const finalSessionId =
+        reviewRes?.sessionId ||
+        reviewRes?.SessionId ||
+        workingSessionId;
+
+      const customerPartNumber =
+        formDraft?.CustomerPartNumber ||
+        formDraft?.customerPartNumber ||
+        extractPartNumberFromSessionId(finalSessionId);
+
+      const customerPartName =
+        formDraft?.CustomerPartName ||
+        formDraft?.customerPartName ||
+        extractPartNameFromSessionId(finalSessionId);
+
+      const customerPartKey =
+        formDraft?.CustomerPartKey ||
+        formDraft?.customerPartKey ||
+        [customerPartNumber, customerPartName].filter(Boolean).join("#");
+
+      const engineeringPartKey =
+        formDraft?.EngineeringPartKey ||
+        formDraft?.engineeringPartKey ||
+        formDraft?.EngPartkey ||
+        formDraft?.engPartkey ||
+        customerPartNumber ||
+        customerPartKey;
+
+      // Step 2: trigger the only assessment endpoint allowed by KC:
+      // /fmd-assessment -> FMD Core Engine AgentCore runtime.
+      const fmdRes = await triggerFmdAssessment(
+        {
+          requestId: finalRequestId,
+          customerRequestId: finalRequestId,
+          chatSessionId: finalSessionId,
+          chatUserId: user?.email,
+          workflowRunType: "Full",
+          delegationCapacity: "3",
+          customerPartKey,
+          engineeringPartKey,
+        },
+        token
+      );
+
       const assessmentSubmitStatus =
-        getWorkflowStatusFromApiResponse(res) || normalizeWorkflowStatus("REQUEST-CONFIRMED");
+        getWorkflowStatusFromApiResponse(fmdRes) ||
+        getWorkflowStatusFromApiResponse(reviewRes) ||
+        normalizeWorkflowStatus("ASSESSMENT-INPROGRESS");
+
       setCurrentRequestStatusOverride(assessmentSubmitStatus);
 
       addMessage({
         sender: "bot",
         role: "assistant",
         text:
-          res?.reply ||
-          "✅ Email review completed. Request submitted for assessment and status moved to REQUEST-CONFIRMED.",
+          fmdRes?.reply ||
+          fmdRes?.message ||
+          "✅ Email review completed and FMD Core Engine assessment triggered.",
         RequestStatus: assessmentSubmitStatus,
         requestStatus: assessmentSubmitStatus,
+        artifact: {
+          type: "fmd_assessment_result",
+          requestId: finalRequestId,
+          response: fmdRes,
+        },
       });
 
       pushLocalCustomerRequestSuggestion({
-        sessionId: res?.sessionId || workingSessionId,
-        requestId: res?.requestId || extractRequestIdFromSessionId(workingSessionId),
+        sessionId: finalSessionId,
+        requestId: finalRequestId,
         customerName: formDraft?.CustomerName || "",
         customerPartName:
-          formDraft?.CustomerPartName || extractPartNameFromSessionId(workingSessionId),
+          formDraft?.CustomerPartName || extractPartNameFromSessionId(finalSessionId),
         customerPartNumber:
-          formDraft?.CustomerPartNumber || extractPartNumberFromSessionId(workingSessionId),
+          formDraft?.CustomerPartNumber || extractPartNumberFromSessionId(finalSessionId),
         requestStatus: assessmentSubmitStatus,
       });
 
@@ -7178,11 +7241,11 @@ const ChatWindow = ({
       window.setTimeout(() => refreshActiveRequestStatus(), 2500);
       window.setTimeout(() => refreshActiveRequestStatus(), 6000);
     } catch (e) {
-      console.error("Submit for assessment failed:", e);
+      console.error("Submit for FMD Core Engine assessment failed:", e);
       addMessage({
         sender: "bot",
         role: "assistant",
-        text: `❌ ${e?.message || "Failed to submit request for assessment"}`,
+        text: `❌ ${e?.message || "Failed to submit request for FMD Core Engine assessment"}`,
       });
     } finally {
       setSubmittingEmailReview(false);

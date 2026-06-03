@@ -3,17 +3,35 @@
 // ===============================
 // API CONFIG FOR AWS API GATEWAY
 // ===============================
-export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
+
+// Main chat app API.
+// This API must be used for normal chat routes, AgentCore chat,
+// file upload/download, customer/supplier workflow, and KC FMD endpoint.
+export const API_BASE_URL = (
+  import.meta.env.VITE_API_BASE_URL ||
+  "https://mfdhqhocm4.execute-api.ap-south-1.amazonaws.com"
+).replace(/\/$/, "");
+
+// KC final decision:
+// Keep only one assessment endpoint in the chat app.
+// Old temporary /assessment-trigger API is no longer used.
+// All assessment triggers now go through /fmd-assessment on the main chat API.
 
 console.log("✅ LOADED api-config.js FROM:", import.meta.url, "TIME:", Date.now());
-console.log("✅ api-config UPDATED VERSION 1024 - SUPPLIER TASK MULTI FILE UPLOAD");
+console.log("✅ api-config UPDATED VERSION 1026 - FMD CORE ENGINE ONLY");
+console.log("✅ CHAT API BASE URL:", API_BASE_URL);
+console.log("✅ FMD CORE ENGINE URL:", `${API_BASE_URL}/fmd-assessment`);
 
 // ===============================
 // ENDPOINTS
 // ===============================
 export const ENDPOINTS = {
+  // Main chat API routes
   chat: `${API_BASE_URL}/chat`,
   agentcoreChat: `${API_BASE_URL}/agentcore-chat`,
+
+  // KC FMD / Core Engine endpoint in main chat API
+  fmdAssessment: `${API_BASE_URL}/fmd-assessment`,
 
   initialise: `${API_BASE_URL}/initialise`,
   rename: `${API_BASE_URL}/rename`,
@@ -517,6 +535,143 @@ export const getCustomerRequestLiveStatus = async (
     item: matched,
     response: data,
   };
+};
+
+
+// ===============================
+// ✅ ASSESSMENT WORKFLOW TRIGGER
+// KC final decision:
+// Old temporary /assessment-trigger is removed/stopped.
+// This function name is kept only for backward compatibility with existing UI imports.
+// It now calls the real Core Engine endpoint: POST /fmd-assessment.
+// ===============================
+export const triggerAssessmentWorkflow = async (
+  {
+    requestId = "",
+    customerRequestId = "",
+    chatSessionId = "",
+    chatUserId = "",
+    customerName = "",
+    customerPart = "",
+    requestStatus = "",
+    customerPartKey = "",
+    engineeringPartKey = "",
+    workflowRunType = "Full",
+    delegationCapacity = "3",
+  } = {},
+  token = ""
+) => {
+  assertToken(token);
+
+  const finalRequestId = asString(requestId || customerRequestId);
+
+  if (!finalRequestId) {
+    throw new Error("CustomerRequestId is required");
+  }
+
+  const resolvedCustomerPartKey = asString(customerPartKey || customerPart);
+
+  const parsedEngineeringPartKey =
+    asString(engineeringPartKey) ||
+    (resolvedCustomerPartKey.includes("#")
+      ? resolvedCustomerPartKey.split("#")[0]
+      : resolvedCustomerPartKey);
+
+  return triggerFmdAssessment(
+    {
+      requestId: finalRequestId,
+      customerRequestId: finalRequestId,
+      chatSessionId,
+      chatUserId,
+      workflowRunType,
+      delegationCapacity,
+      customerPartKey: resolvedCustomerPartKey,
+      engineeringPartKey: parsedEngineeringPartKey,
+      customerName,
+      customerPart,
+      requestStatus,
+    },
+    token
+  );
+};
+
+// ===============================
+// ✅ KC FMD / CORE ENGINE ASSESSMENT
+// POST /fmd-assessment on main srs-ai-dev-user-chat API
+// IMPORTANT: This uses API_BASE_URL through ENDPOINTS.fmdAssessment.
+// ===============================
+export const triggerFmdAssessment = async (
+  {
+    requestId = "",
+    customerRequestId = "",
+    chatSessionId = "",
+    chatUserId = "",
+    workflowRunType = "Full",
+    delegationCapacity = "3",
+    customerPartKey = "",
+    engineeringPartKey = "",
+    customerName = "",
+    customerPart = "",
+    requestStatus = "",
+  } = {},
+  token
+) => {
+  assertToken(token);
+
+  const finalRequestId = asString(customerRequestId || requestId);
+
+  if (!finalRequestId) {
+    throw new Error("CustomerRequestId is required");
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_AGENT);
+
+  try {
+    const res = await fetch(ENDPOINTS.fmdAssessment, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        session: {
+          RequestId: finalRequestId,
+          CustomerRequestId: finalRequestId,
+          ChatSessionId: chatSessionId || "",
+          ChatUserId: chatUserId || "",
+          WorkflowRunType: workflowRunType || "Full",
+          DelegationCapacity: String(delegationCapacity || "3"),
+          CustomerPartKey: customerPartKey || customerPart || "",
+          EngineeringPartKey: engineeringPartKey || "",
+          CustomerName: customerName || "",
+          CustomerPart: customerPart || customerPartKey || "",
+          RequestStatus: requestStatus || "",
+        },
+      }),
+      signal: controller.signal,
+    });
+
+    const { text, data } = await parseJsonSafe(res);
+
+    if (!res.ok) {
+      throw new Error(
+        data?.error ||
+          data?.message ||
+          text ||
+          `FMD assessment failed (${res.status})`
+      );
+    }
+
+    return data;
+  } catch (e) {
+    if (String(e?.name).includes("AbortError")) {
+      throw new Error("AGENT_TIMEOUT");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
 };
 
 // ===============================
