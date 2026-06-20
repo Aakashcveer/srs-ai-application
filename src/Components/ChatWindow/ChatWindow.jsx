@@ -6104,8 +6104,7 @@ const ChatWindow = ({
         artifact ? safeJsonStringify(artifact) : "",
       ]
         .filter(Boolean)
-        .join("
-")
+        .join("\n")
         .toLowerCase();
 
       return (
@@ -6131,8 +6130,7 @@ const ChatWindow = ({
         m?.artifact ? safeJsonStringify(m.artifact) : "",
       ]
         .filter(Boolean)
-        .join("
-")
+        .join("\n")
         .toLowerCase();
 
       return (
