@@ -18,7 +18,7 @@ export const API_BASE_URL = (
 // All assessment triggers now go through /fmd-assessment on the main chat API.
 
 console.log("✅ LOADED api-config.js FROM:", import.meta.url, "TIME:", Date.now());
-console.log("✅ api-config UPDATED VERSION 1026 - FMD CORE ENGINE ONLY");
+console.log("✅ api-config UPDATED VERSION 1029 - KC FMD FULL PAYLOAD");
 console.log("✅ CHAT API BASE URL:", API_BASE_URL);
 console.log("✅ FMD CORE ENGINE URL:", `${API_BASE_URL}/fmd-assessment`);
 
@@ -69,6 +69,10 @@ export const ENDPOINTS = {
   sendEmail: `${API_BASE_URL}/customer-request/send-email`,
   processCustomerReply: `${API_BASE_URL}/customer-request/process-reply`,
 
+  // ✅ ASSESSMENT REPORT PDF + CUSTOMER EMAIL FLOW
+  assessmentReportPresign: `${API_BASE_URL}/assessment/report/presign`,
+  assessmentEmailGenerate: `${API_BASE_URL}/assessment/email/generate`,
+
   // CONFIG
   config: `${API_BASE_URL}/config`,
 };
@@ -102,6 +106,232 @@ const parseJsonSafe = async (res) => {
 };
 
 const asString = (value) => String(value ?? "").trim();
+
+
+const makeKcWorkflowRunId = () => {
+  const now = new Date();
+  const pad = (value, size = 2) => String(value).padStart(size, "0");
+
+  const datePart = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
+  const timePart = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  const microPart = `${pad(now.getMilliseconds(), 3)}000`;
+  const randomPart =
+    typeof crypto !== "undefined" && crypto?.getRandomValues
+      ? Array.from(crypto.getRandomValues(new Uint8Array(4)))
+          .map((byte) => byte.toString(16).padStart(2, "0"))
+          .join("")
+      : Math.random().toString(16).slice(2, 10).padEnd(8, "0");
+
+  return `${datePart}#${timePart}#${microPart}#${randomPart.slice(0, 8)}`;
+};
+
+
+// ===============================
+// ✅ DYNAMODB / ASSESSMENT REPORT NORMALIZER
+// ===============================
+// Some backend routes return normal JSON, while some return DynamoDB-style
+// AttributeValue objects like { S: "..." }, { M: {...} }, { L: [...] }.
+// These helpers make report/status fields clean before ChatWindow receives them.
+export const unwrapDynamoValue = (value) => {
+  if (value === null || value === undefined) return value;
+
+  if (typeof value !== "object") return value;
+
+  if (Array.isArray(value)) return value.map(unwrapDynamoValue);
+
+  if (Object.prototype.hasOwnProperty.call(value, "S")) return value.S ?? "";
+  if (Object.prototype.hasOwnProperty.call(value, "N")) return value.N ?? "";
+  if (Object.prototype.hasOwnProperty.call(value, "BOOL")) return Boolean(value.BOOL);
+  if (Object.prototype.hasOwnProperty.call(value, "NULL")) return null;
+  if (Object.prototype.hasOwnProperty.call(value, "M")) return unwrapDynamoValue(value.M || {});
+  if (Object.prototype.hasOwnProperty.call(value, "L")) return unwrapDynamoValue(value.L || []);
+  if (Object.prototype.hasOwnProperty.call(value, "SS")) return value.SS || [];
+  if (Object.prototype.hasOwnProperty.call(value, "NS")) return value.NS || [];
+
+  const out = {};
+  for (const [key, val] of Object.entries(value)) {
+    out[key] = unwrapDynamoValue(val);
+  }
+  return out;
+};
+
+const firstNonEmpty = (...values) => {
+  for (const value of values) {
+    const unwrapped = unwrapDynamoValue(value);
+    if (typeof unwrapped === "string" && unwrapped.trim()) return unwrapped.trim();
+    if (unwrapped !== null && unwrapped !== undefined && typeof unwrapped !== "object") {
+      const text = String(unwrapped).trim();
+      if (text) return text;
+    }
+  }
+  return "";
+};
+
+export const normalizeAssessmentReportFields = (item = {}) => {
+  const clean = unwrapDynamoValue(item) || {};
+  const assessmentDetail = clean.AssessmentDetail || clean.assessmentDetail || {};
+
+  const reportMarkdown = firstNonEmpty(
+    clean.AssessmentReportMarkdown,
+    clean.assessmentReportMarkdown,
+    clean.AssessmentResult,
+    clean.assessmentResult,
+    clean.ReportMarkdown,
+    clean.reportMarkdown,
+    clean.Report,
+    clean.report,
+    assessmentDetail.Report,
+    assessmentDetail.report,
+    assessmentDetail.AssessmentReportMarkdown,
+    assessmentDetail.assessmentReportMarkdown,
+    assessmentDetail.AssessmentResult,
+    assessmentDetail.assessmentResult,
+    assessmentDetail.ReportMarkdown,
+    assessmentDetail.reportMarkdown
+  );
+
+  const reportS3Path = firstNonEmpty(
+    clean.AssessmentReportS3Key,
+    clean.assessmentReportS3Key,
+    clean.AssessmentReportS3Path,
+    clean.assessmentReportS3Path,
+    clean.ReportPublishedFilePath,
+    clean.reportPublishedFilePath,
+    clean.ReportS3Key,
+    clean.reportS3Key,
+    clean.ReportPath,
+    clean.reportPath,
+    assessmentDetail.ReportPublishedFilePath,
+    assessmentDetail.reportPublishedFilePath,
+    assessmentDetail.AssessmentReportS3Key,
+    assessmentDetail.assessmentReportS3Key,
+    assessmentDetail.ReportS3Key,
+    assessmentDetail.reportS3Key,
+    assessmentDetail.ReportPath,
+    assessmentDetail.reportPath
+  );
+
+  const reportPublishedStatus = firstNonEmpty(
+    clean.ReportPublishedStatus,
+    clean.reportPublishedStatus,
+    assessmentDetail.ReportPublishedStatus,
+    assessmentDetail.reportPublishedStatus
+  );
+
+  const reportCreatedBy = firstNonEmpty(
+    clean.ReportCreatedBy,
+    clean.reportCreatedBy,
+    assessmentDetail.ReportCreatedBy,
+    assessmentDetail.reportCreatedBy
+  );
+
+  const reportCreatedOn = firstNonEmpty(
+    clean.ReportCreatedOn,
+    clean.reportCreatedOn,
+    assessmentDetail.ReportCreatedOn,
+    assessmentDetail.reportCreatedOn
+  );
+
+  return {
+    ...clean,
+    AssessmentDetail: {
+      ...assessmentDetail,
+      ...(reportMarkdown ? { Report: reportMarkdown } : {}),
+      ...(reportS3Path ? { ReportPublishedFilePath: reportS3Path } : {}),
+      ...(reportPublishedStatus ? { ReportPublishedStatus: reportPublishedStatus } : {}),
+      ...(reportCreatedBy ? { ReportCreatedBy: reportCreatedBy } : {}),
+      ...(reportCreatedOn ? { ReportCreatedOn: reportCreatedOn } : {}),
+    },
+    ...(reportMarkdown
+      ? {
+          AssessmentReportMarkdown: reportMarkdown,
+          assessmentReportMarkdown: reportMarkdown,
+          AssessmentResult: reportMarkdown,
+          assessmentResult: reportMarkdown,
+        }
+      : {}),
+    ...(reportS3Path
+      ? {
+          AssessmentReportS3Key: reportS3Path,
+          assessmentReportS3Key: reportS3Path,
+          AssessmentReportS3Path: reportS3Path,
+          assessmentReportS3Path: reportS3Path,
+        }
+      : {}),
+    ...(reportPublishedStatus
+      ? {
+          ReportPublishedStatus: reportPublishedStatus,
+          reportPublishedStatus,
+        }
+      : {}),
+  };
+};
+
+const normalizeCustomerRequestItem = (item = {}) => {
+  const clean = normalizeAssessmentReportFields(item);
+
+  const requestStatus = firstNonEmpty(
+    clean.RequestStatus,
+    clean.requestStatus,
+    clean.Status,
+    clean.status
+  );
+
+  const requestId = firstNonEmpty(
+    clean.RequestId,
+    clean.requestId,
+    clean.id
+  );
+
+  const sessionId = firstNonEmpty(
+    clean.SessionId,
+    clean.sessionId
+  );
+
+  return {
+    ...clean,
+    ...(requestStatus ? { RequestStatus: requestStatus, requestStatus } : {}),
+    ...(requestId ? { RequestId: requestId, requestId } : {}),
+    ...(sessionId ? { SessionId: sessionId, sessionId } : {}),
+  };
+};
+
+export const normalizeCustomerRequestResponse = (data = {}) => {
+  const clean = unwrapDynamoValue(data) || {};
+
+  const normalizeArray = (arr) =>
+    Array.isArray(arr) ? arr.map(normalizeCustomerRequestItem) : arr;
+
+  const normalized = {
+    ...clean,
+    ...(Array.isArray(clean.items) ? { items: normalizeArray(clean.items) } : {}),
+    ...(Array.isArray(clean.Items) ? { Items: normalizeArray(clean.Items) } : {}),
+    ...(Array.isArray(clean.requests) ? { requests: normalizeArray(clean.requests) } : {}),
+    ...(Array.isArray(clean.Requests) ? { Requests: normalizeArray(clean.Requests) } : {}),
+    ...(Array.isArray(clean.results) ? { results: normalizeArray(clean.results) } : {}),
+    ...(Array.isArray(clean.Results) ? { Results: normalizeArray(clean.Results) } : {}),
+    ...(Array.isArray(clean.sessions) ? { sessions: normalizeArray(clean.sessions) } : {}),
+    ...(Array.isArray(clean.Sessions) ? { Sessions: normalizeArray(clean.Sessions) } : {}),
+    ...(Array.isArray(clean.data) ? { data: normalizeArray(clean.data) } : {}),
+    ...(clean.item ? { item: normalizeCustomerRequestItem(clean.item) } : {}),
+    ...(clean.Item ? { Item: normalizeCustomerRequestItem(clean.Item) } : {}),
+    ...(clean.request ? { request: normalizeCustomerRequestItem(clean.request) } : {}),
+    ...(clean.Request ? { Request: normalizeCustomerRequestItem(clean.Request) } : {}),
+  };
+
+  // Some APIs return a single CustomerRequest item at root.
+  if (
+    normalized.RequestId ||
+    normalized.requestId ||
+    normalized.RequestStatus ||
+    normalized.requestStatus ||
+    normalized.AssessmentDetail
+  ) {
+    return normalizeCustomerRequestItem(normalized);
+  }
+
+  return normalized;
+};
 
 // ✅ KC strict CustomerRequestStore frontend payload helper
 // Backend is still the final source of truth, but this avoids sending random extra
@@ -419,7 +649,7 @@ export const searchCustomerRequests = async (
       );
     }
 
-    return data;
+    return normalizeCustomerRequestResponse(data);
   } catch (e) {
     if (String(e?.name).includes("AbortError")) {
       throw new Error("REQUEST_TIMEOUT");
@@ -461,11 +691,15 @@ export const getCustomerRequestLiveStatus = async (
 
   const candidates = [
     ...(Array.isArray(data?.items) ? data.items : []),
+    ...(Array.isArray(data?.Items) ? data.Items : []),
     ...(Array.isArray(data?.requests) ? data.requests : []),
+    ...(Array.isArray(data?.Requests) ? data.Requests : []),
     ...(Array.isArray(data?.results) ? data.results : []),
+    ...(Array.isArray(data?.Results) ? data.Results : []),
     ...(Array.isArray(data?.sessions) ? data.sessions : []),
+    ...(Array.isArray(data?.Sessions) ? data.Sessions : []),
     ...(Array.isArray(data?.data) ? data.data : []),
-  ];
+  ].map(normalizeCustomerRequestItem);
 
   const normalizeId = (value = "") => asString(value).toLowerCase();
 
@@ -498,16 +732,21 @@ export const getCustomerRequestLiveStatus = async (
     }) ||
     candidates[0] ||
     data?.item ||
+    data?.Item ||
     data?.request ||
+    data?.Request ||
+    (data?.RequestId || data?.requestId || data?.AssessmentDetail ? data : null) ||
     null;
 
+  const normalizedMatched = matched ? normalizeCustomerRequestItem(matched) : null;
+
   const rawStatus = asString(
-    matched?.RequestStatus ||
-      matched?.requestStatus ||
-      matched?.Status ||
-      matched?.status ||
-      matched?.rawRequestStatus ||
-      matched?.RawRequestStatus ||
+    normalizedMatched?.RequestStatus ||
+      normalizedMatched?.requestStatus ||
+      normalizedMatched?.Status ||
+      normalizedMatched?.status ||
+      normalizedMatched?.rawRequestStatus ||
+      normalizedMatched?.RawRequestStatus ||
       data?.RequestStatus ||
       data?.requestStatus ||
       data?.status ||
@@ -518,21 +757,24 @@ export const getCustomerRequestLiveStatus = async (
     requestStatus: rawStatus,
     rawRequestStatus: rawStatus,
     requestId: asString(
-      matched?.RequestId ||
-        matched?.requestId ||
+      normalizedMatched?.RequestId ||
+        normalizedMatched?.requestId ||
         data?.RequestId ||
         data?.requestId ||
         shortRequestId ||
         query
     ),
     sessionId: asString(
-      matched?.SessionId ||
-        matched?.sessionId ||
+      normalizedMatched?.SessionId ||
+        normalizedMatched?.sessionId ||
         data?.SessionId ||
         data?.sessionId ||
         query
     ),
-    item: matched,
+    item: normalizedMatched,
+    assessmentReportMarkdown: normalizedMatched?.AssessmentReportMarkdown || "",
+    assessmentReportS3Key: normalizedMatched?.AssessmentReportS3Key || "",
+    assessmentDetail: normalizedMatched?.AssessmentDetail || null,
     response: data,
   };
 };
@@ -601,28 +843,58 @@ export const triggerAssessmentWorkflow = async (
 // IMPORTANT: This uses API_BASE_URL through ENDPOINTS.fmdAssessment.
 // ===============================
 export const triggerFmdAssessment = async (
-  {
-    requestId = "",
-    customerRequestId = "",
-    chatSessionId = "",
-    chatUserId = "",
-    workflowRunType = "Full",
-    delegationCapacity = "3",
-    customerPartKey = "",
-    engineeringPartKey = "",
-    customerName = "",
-    customerPart = "",
-    requestStatus = "",
-  } = {},
+  payload = {},
   token
 ) => {
   assertToken(token);
 
-  const finalRequestId = asString(customerRequestId || requestId);
+  const finalRequestId = asString(
+    payload.CustomerRequestId ||
+      payload.customerRequestId ||
+      payload.RequestId ||
+      payload.requestId
+  );
 
   if (!finalRequestId) {
     throw new Error("CustomerRequestId is required");
   }
+
+  const kcSessionPayload = {
+    WorkflowName: "FMD",
+    WorkflowRunId: asString(payload.WorkflowRunId || payload.workflowRunId) || makeKcWorkflowRunId(),
+    WorkflowRunType: "Full",
+    CustomerName: asString(
+      payload.CustomerName ||
+        payload.customerName ||
+        "General Motors"
+    ),
+    CustomerRequestId: finalRequestId,
+    ChatSessionId: asString(
+      payload.ChatSessionId ||
+        payload.chatSessionId ||
+        payload.SessionId ||
+        payload.sessionId
+    ),
+    ChatUserId: asString(
+      payload.ChatUserId ||
+        payload.chatUserId ||
+        payload.UserId ||
+        payload.userId ||
+        payload.email
+    ),
+    DelegationCapacity: String(
+      payload.DelegationCapacity ||
+        payload.delegationCapacity ||
+        "3"
+    ),
+    EngineeringPartKey: asString(
+      payload.EngineeringPartKey ||
+        payload.engineeringPartKey ||
+        payload.EngPartkey ||
+        payload.engPartkey ||
+        "BRK-7700#High-Perf Brake Assy"
+    ),
+  };
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_AGENT);
@@ -635,19 +907,7 @@ export const triggerFmdAssessment = async (
         Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({
-        session: {
-          RequestId: finalRequestId,
-          CustomerRequestId: finalRequestId,
-          ChatSessionId: chatSessionId || "",
-          ChatUserId: chatUserId || "",
-          WorkflowRunType: workflowRunType || "Full",
-          DelegationCapacity: String(delegationCapacity || "3"),
-          CustomerPartKey: customerPartKey || customerPart || "",
-          EngineeringPartKey: engineeringPartKey || "",
-          CustomerName: customerName || "",
-          CustomerPart: customerPart || customerPartKey || "",
-          RequestStatus: requestStatus || "",
-        },
+        session: kcSessionPayload,
       }),
       signal: controller.signal,
     });
@@ -850,7 +1110,8 @@ export const initialiseChat = async (token, email, sessionId = null) => {
     throw new Error(`Initialise failed: ${errText}`);
   }
 
-  return response.json();
+  const data = await response.json();
+  return normalizeCustomerRequestResponse(data);
 };
 
 // ===============================
@@ -1382,6 +1643,11 @@ export const sendCustomerEmail = async (
     emailKind = "",
     kind = "",
     isSupplierEmail = false,
+    attachAssessmentPdf = false,
+    reportS3Path = "",
+    assessmentReportS3Path = "",
+    attachmentFileName = "",
+    attachments = [],
   },
   token
 ) => {
@@ -1419,6 +1685,11 @@ export const sendCustomerEmail = async (
           emailKind: resolvedEmailKind,
           kind: resolvedEmailKind,
           isSupplierEmail: Boolean(isSupplierEmail || resolvedEmailKind === "supplier_fmd_request"),
+          attachAssessmentPdf: Boolean(attachAssessmentPdf),
+          reportS3Path: reportS3Path || assessmentReportS3Path || "",
+          assessmentReportS3Path: assessmentReportS3Path || reportS3Path || "",
+          attachmentFileName: attachmentFileName || "",
+          attachments: Array.isArray(attachments) ? attachments : [],
         },
         payload: {
           to,
@@ -1430,6 +1701,11 @@ export const sendCustomerEmail = async (
           emailKind: resolvedEmailKind,
           kind: resolvedEmailKind,
           isSupplierEmail: Boolean(isSupplierEmail || resolvedEmailKind === "supplier_fmd_request"),
+          attachAssessmentPdf: Boolean(attachAssessmentPdf),
+          reportS3Path: reportS3Path || assessmentReportS3Path || "",
+          assessmentReportS3Path: assessmentReportS3Path || reportS3Path || "",
+          attachmentFileName: attachmentFileName || "",
+          attachments: Array.isArray(attachments) ? attachments : [],
         },
       }),
       signal: controller.signal,
@@ -1455,6 +1731,83 @@ export const sendCustomerEmail = async (
   } finally {
     clearTimeout(timer);
   }
+};
+
+
+// ===============================
+// ✅ ASSESSMENT REPORT PDF PRESIGN
+// POST /assessment/report/presign
+// ===============================
+export const presignAssessmentReportPdf = async (
+  { sessionId = "", userId = "", requestId = "", reportS3Path = "" } = {},
+  token
+) => {
+  assertToken(token);
+  if (!sessionId) throw new Error("sessionId is required");
+  if (!userId) throw new Error("userId is required");
+
+  const res = await fetch(ENDPOINTS.assessmentReportPresign, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      session: {
+        SessionId: sessionId,
+        UserId: userId,
+        requestId,
+        reportS3Path,
+        s3Path: reportS3Path,
+      },
+      payload: {
+        requestId,
+        reportS3Path,
+        s3Path: reportS3Path,
+      },
+    }),
+  });
+
+  const { text, data } = await parseJsonSafe(res);
+  if (!res.ok) {
+    throw new Error(data?.error || data?.message || text || `PDF presign failed (${res.status})`);
+  }
+  return data;
+};
+
+// ===============================
+// ✅ GENERATE CUSTOMER ASSESSMENT EMAIL DRAFT
+// POST /assessment/email/generate
+// ===============================
+export const generateAssessmentCustomerEmail = async (
+  { sessionId = "", userId = "", requestId = "" } = {},
+  token
+) => {
+  assertToken(token);
+  if (!sessionId) throw new Error("sessionId is required");
+  if (!userId) throw new Error("userId is required");
+
+  const res = await fetch(ENDPOINTS.assessmentEmailGenerate, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      session: {
+        SessionId: sessionId,
+        UserId: userId,
+        requestId,
+      },
+      payload: { requestId },
+    }),
+  });
+
+  const { text, data } = await parseJsonSafe(res);
+  if (!res.ok) {
+    throw new Error(data?.error || data?.message || text || `Generate assessment email failed (${res.status})`);
+  }
+  return data;
 };
 
 // ===============================

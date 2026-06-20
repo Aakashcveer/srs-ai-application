@@ -23,6 +23,8 @@ import {
   processCustomerReply,
   triggerFmdAssessment,
   buildRequestConfirmationEmailMarkdown,
+  presignAssessmentReportPdf,
+  generateAssessmentCustomerEmail,
   uploadSupplierTaskFile,
   submitSupplierTaskForReview,
   downloadSupplierTaskFile,
@@ -34,6 +36,25 @@ import { getAccessToken } from "../../AWS/auth";
    =============================== */
 const CUSTOMER_REQUEST_FROM_EMAIL =
   "sustainability@assureai.onmicrosoft.com";
+
+const makeKcWorkflowRunId = () => {
+  const now = new Date();
+  const pad = (value, size = 2) => String(value).padStart(size, "0");
+
+  const datePart = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
+  const timePart = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  const microPart = `${pad(now.getMilliseconds(), 3)}000`;
+
+  const randomPart =
+    typeof crypto !== "undefined" && crypto?.getRandomValues
+      ? Array.from(crypto.getRandomValues(new Uint8Array(4)))
+          .map((byte) => byte.toString(16).padStart(2, "0"))
+          .join("")
+      : Math.random().toString(16).slice(2, 10).padEnd(8, "0");
+
+  return `${datePart}#${timePart}#${microPart}#${randomPart.slice(0, 8)}`;
+};
+
 
 // Keep all customer-request email subjects locked to the active sidebar session.
 // Example sessionId:
@@ -186,6 +207,23 @@ const WORKFLOW_STATUS_ORDER = [
   "REQUEST-CLOSED",
 ];
 
+
+const safeJsonStringify = (value) => {
+  try {
+    const seen = new WeakSet();
+    return JSON.stringify(value, (key, val) => {
+      if (typeof val === "object" && val !== null) {
+        if (seen.has(val)) return "";
+        seen.add(val);
+      }
+      if (key === "_owner" || key === "__reactFiber$" || key === "__reactProps$") return "";
+      return val;
+    });
+  } catch {
+    return "";
+  }
+};
+
 const escapeRegex = (value = "") =>
   String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -255,7 +293,7 @@ const extractWorkflowStatusFromMessage = (message = {}) => {
     extractMessageText(message),
     message?.text,
     typeof message?.content === "string" ? message.content : "",
-    message?.artifact ? JSON.stringify(message.artifact) : "",
+    message?.artifact ? safeJsonStringify(message.artifact) : "",
   ]
     .filter(Boolean)
     .join("\n");
@@ -282,8 +320,8 @@ const hasSupplierPendingAssessmentSignal = (messages = []) => {
       extractMessageText(m),
       m?.text,
       typeof m?.content === "string" ? m.content : "",
-      m?.artifact ? JSON.stringify(m.artifact) : "",
-      m?.emailDraft ? JSON.stringify(m.emailDraft) : "",
+      m?.artifact ? safeJsonStringify(m.artifact) : "",
+      m?.emailDraft ? safeJsonStringify(m.emailDraft) : "",
     ]
       .filter(Boolean)
       .join("\n")
@@ -458,6 +496,213 @@ const extractMessageText = (m = {}) => {
       : Array.isArray(m?.content) && m.content[0]?.text
       ? m.content[0].text
       : "")
+  );
+};
+
+
+const isEmailSentConfirmationText = (text = "") => {
+  const value = String(text || "").trim().toLowerCase();
+  return (
+    value.includes("email sent successfully") ||
+    value.includes("status moved to results-submitted") ||
+    value.includes("status moved to request-review") ||
+    value.includes("with attached assessment pdf")
+  );
+};
+
+
+const getAssessmentReportArtifact = (message = {}) => {
+  const artifact = message?.artifact || {};
+  const artifactType = String(artifact?.type || artifact?.artifactType || "")
+    .trim()
+    .toLowerCase();
+
+  const reportPath = String(
+    artifact?.assessmentReportS3Path ||
+      artifact?.AssessmentReportS3Path ||
+      artifact?.reportS3Path ||
+      artifact?.ReportPublishedFilePath ||
+      artifact?.assessment?.assessmentReportS3Path ||
+      ""
+  ).trim();
+
+  const reportStatus = String(
+    artifact?.assessmentReportPublishedStatus ||
+      artifact?.ReportPublishedStatus ||
+      artifact?.assessment?.assessmentReportPublishedStatus ||
+      ""
+  ).trim();
+
+  const reportMarkdown = String(
+    artifact?.assessmentReportMarkdown ||
+      artifact?.AssessmentReportMarkdown ||
+      artifact?.assessment?.assessmentReportMarkdown ||
+      ""
+  ).trim();
+
+  const text = String(extractMessageText(message) || "");
+  const looksLikeAssessmentReport =
+    artifactType === "assessment_report" ||
+    Boolean(reportPath) ||
+    text.toLowerCase().includes("assessment report generated") ||
+    (text.toLowerCase().includes("full material disclosure") &&
+      text.toLowerCase().includes("compliance report"));
+
+  if (!looksLikeAssessmentReport) return null;
+
+  return {
+    ...(artifact || {}),
+    type: "assessment_report",
+    requestId: String(
+      artifact?.requestId || artifact?.RequestId || ""
+    ).trim(),
+    assessmentReportS3Path: reportPath,
+    assessmentReportPublishedStatus: reportStatus,
+    assessmentReportMarkdown: reportMarkdown,
+  };
+};
+
+
+
+
+
+const getAssessmentMarkdownForViewer = (message = {}, fallbackText = "") => {
+  const artifact = message?.artifact || {};
+  const assessment = artifact?.assessment || message?.assessment || {};
+
+  const candidates = [
+    artifact?.assessmentReportMarkdown,
+    artifact?.AssessmentReportMarkdown,
+    artifact?.assessment?.assessmentReportMarkdown,
+    artifact?.assessment?.AssessmentReportMarkdown,
+    assessment?.assessmentReportMarkdown,
+    assessment?.AssessmentReportMarkdown,
+    message?.assessmentReportMarkdown,
+    message?.AssessmentReportMarkdown,
+    fallbackText,
+    extractMessageText(message),
+  ];
+
+  for (const value of candidates) {
+    const clean = String(value || "").trim();
+    const lower = clean.toLowerCase();
+
+    if (!clean) continue;
+    if (lower === "customer email draft generated with assessment pdf attachment.") continue;
+    if (lower === "email draft generated with assessment pdf attachment.") continue;
+    if (lower.includes("email sent successfully")) continue;
+
+    if (
+      lower.includes("full material disclosure") ||
+      lower.includes("imds compliance report") ||
+      lower.includes("regulatory compliance matrix") ||
+      lower.includes("bill of material") ||
+      lower.includes("compliance report")
+    ) {
+      return clean;
+    }
+  }
+
+  return "";
+};
+
+
+const getAssessmentMarkdownFromSessionData = (session = {}) => {
+  const assessmentResult = session?.assessmentResult || session?.AssessmentResult || {};
+  const assessmentDetail = session?.assessmentDetail || session?.AssessmentDetail || {};
+
+  const candidates = [
+    session?.assessmentReportMarkdown,
+    session?.AssessmentReportMarkdown,
+    assessmentResult?.assessmentReportMarkdown,
+    assessmentResult?.AssessmentReportMarkdown,
+    assessmentResult?.report,
+    assessmentResult?.Report,
+    assessmentDetail?.assessmentReportMarkdown,
+    assessmentDetail?.AssessmentReportMarkdown,
+    assessmentDetail?.report,
+    assessmentDetail?.Report,
+  ];
+
+  for (const value of candidates) {
+    const clean = String(value || "").trim();
+    const lower = clean.toLowerCase();
+
+    if (!clean) continue;
+    if (lower.includes("email sent successfully")) continue;
+    if (lower.includes("email draft generated with assessment pdf attachment")) continue;
+
+    const looksLikeReport =
+      lower.includes("full material disclosure") ||
+      lower.includes("imds compliance report") ||
+      lower.includes("regulatory compliance matrix") ||
+      lower.includes("bill of material") ||
+      lower.includes("compliance report");
+
+    if (looksLikeReport) return clean;
+  }
+
+  return "";
+};
+
+
+const isAssessmentReportMessage = (message = {}) =>
+  Boolean(getAssessmentReportArtifact(message));
+
+const getMessageEmailDraft = (message = {}) => {
+  const artifact = message?.artifact || {};
+  const directDraft = message?.emailDraft || message?.EmailDraft || null;
+
+  if (directDraft && typeof directDraft === "object") {
+    return directDraft;
+  }
+
+  const artifactType = String(artifact?.type || artifact?.artifactType || "")
+    .trim()
+    .toLowerCase();
+  const emailKind = String(artifact?.emailKind || artifact?.kind || "")
+    .trim()
+    .toLowerCase();
+
+  if (
+    artifactType === "email_draft" ||
+    emailKind === "assessment_report_customer_email" ||
+    emailKind === "customer_request_email"
+  ) {
+    return {
+      ...artifact,
+      type: "email_draft",
+      emailKind: artifact?.emailKind || artifact?.kind || "customer_request_email",
+      kind: artifact?.kind || artifact?.emailKind || "customer_request_email",
+      to: artifact?.to || artifact?.To || "",
+      from: artifact?.from || artifact?.From || CUSTOMER_REQUEST_FROM_EMAIL,
+      subject: artifact?.subject || artifact?.Subject || "",
+      body: artifact?.body || artifact?.Body || "",
+      attachments: Array.isArray(artifact?.attachments) ? artifact.attachments : [],
+      attachmentFileName: artifact?.attachmentFileName || "",
+      reportS3Path: artifact?.assessmentReportS3Path || artifact?.reportS3Path || "",
+      assessmentReportS3Path: artifact?.assessmentReportS3Path || artifact?.reportS3Path || "",
+      attachAssessmentPdf: Boolean(artifact?.attachAssessmentPdf),
+      requestId: artifact?.requestId || artifact?.RequestId || "",
+    };
+  }
+
+  return null;
+};
+
+const fileNameFromS3Path = (s3Path = "", fallback = "assessment-report.pdf") => {
+  const clean = String(s3Path || "").trim();
+  if (!clean) return fallback;
+  return clean.split("/").pop() || fallback;
+};
+
+
+const isFullAssessmentS3Path = (value = "") => {
+  const clean = String(value || "").trim();
+  return (
+    clean.startsWith("s3://") ||
+    clean.startsWith("assessment-docs/") ||
+    clean.includes("/assessment-docs/")
   );
 };
 
@@ -909,6 +1154,19 @@ const CustomerReplyActionCard = ({ onOpen }) => {
 };
 
 
+
+const EmailSentConfirmationCard = ({ text = "" }) => {
+  const cleanText = String(text || "").replace(/^✅\s*/, "").trim();
+
+  return (
+    <div className="emailSentConfirmationCard">
+      <span className="emailSentConfirmationIcon">✅</span>
+      <span>{cleanText}</span>
+    </div>
+  );
+};
+
+
 /* ===============================
    ✅ Automatic EMAIL REVIEW Action Card
    =============================== */
@@ -1334,6 +1592,7 @@ const EmailReviewActionCard = ({
    ✅ Email Draft Helpers + Card
    =============================== */
 const looksLikeEmailDraft = (text = "") => {
+  if (isEmailSentConfirmationText(text)) return false;
   const value = String(text || "").trim();
   if (!value) return false;
   if (!/^subject\s*:/i.test(value) && !/\nsubject\s*:/i.test(value)) return false;
@@ -1599,6 +1858,15 @@ const normalizeEmailDraft = (msg = {}, text = "", fallbackTo = "") => {
       isSupplierEmail: isSupplier,
     };
   }
+
+  if (isEmailSentConfirmationText(text || '')) {
+
+
+    return <EmailSentConfirmationCard text={text || ''} />;
+
+
+  }
+
 
   if (looksLikeEmailDraft(text)) {
     return parseEmailDraftFromText(text, to);
@@ -3369,7 +3637,20 @@ const SupplierUploadedDocsMarkdownCard = ({ text, artifact, user, sessionId }) =
   );
 };
 
-const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail }) => {
+const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail, onPreviewAttachment, onDownloadAttachment }) => {
+  const draftSentConfirmationText = String(
+    draft?.body ||
+      draft?.Body ||
+      draft?.text ||
+      draft?.content ||
+      draft?.reply ||
+      ""
+  ).trim();
+
+  if (isEmailSentConfirmationText(draftSentConfirmationText)) {
+    return <EmailSentConfirmationCard text={draftSentConfirmationText} />;
+  }
+
   const isSupplier = Boolean(draft?.isSupplierEmail) || isSupplierEmailDraft(draft);
   const defaultDraft = {
     to: "",
@@ -3576,6 +3857,64 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail }) => {
         )}
       </div>
 
+      {Array.isArray(localDraft.attachments) && localDraft.attachments.length > 0 ? (
+        <div className="emailAttachmentStrip">
+          <div className="emailAttachmentStripLabel">Attachment</div>
+          {localDraft.attachments.map((file, idx) => (
+            <div className="emailAttachmentRow" key={`${file?.fileName || "attachment"}-${idx}`}>
+              <div className="emailAttachmentPill">
+                <span className="emailAttachmentIcon">📎</span>
+                <span className="emailAttachmentName">
+                  {file?.fileName || localDraft?.attachmentFileName || "Assessment report.pdf"}
+                </span>
+              </div>
+              <div className="emailAttachmentActions">
+                <button
+                  type="button"
+                  className="emailAttachmentBtn"
+                  onClick={() => onPreviewAttachment?.(file)}
+                >
+                  Preview
+                </button>
+                <button
+                  type="button"
+                  className="emailAttachmentBtn"
+                  onClick={() => onDownloadAttachment?.(file)}
+                >
+                  Download
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : localDraft?.attachmentFileName ? (
+        <div className="emailAttachmentStrip">
+          <div className="emailAttachmentStripLabel">Attachment</div>
+          <div className="emailAttachmentRow">
+            <div className="emailAttachmentPill">
+              <span className="emailAttachmentIcon">📎</span>
+              <span className="emailAttachmentName">{localDraft.attachmentFileName}</span>
+            </div>
+            <div className="emailAttachmentActions">
+              <button
+                type="button"
+                className="emailAttachmentBtn"
+                onClick={() => onPreviewAttachment?.(localDraft)}
+              >
+                Preview
+              </button>
+              <button
+                type="button"
+                className="emailAttachmentBtn"
+                onClick={() => onDownloadAttachment?.(localDraft)}
+              >
+                Download
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <div className="emailDraftFooter">
         <div className="emailDraftFooterHint">
           {isEditing
@@ -3605,6 +3944,216 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail }) => {
       </div>
 
       {statusMsg ? <div className="formSaveMsg">{statusMsg}</div> : null}
+    </div>
+  );
+};
+
+
+/* ===============================
+   ✅ Assessment Report PDF + Customer Email Card
+   =============================== */
+const AssessmentReportCard = ({
+  message,
+  sessionAssessmentMarkdown = "",
+  user,
+  sessionId,
+  onSaveDraft,
+  onSendEmail,
+}) => {
+
+  const artifact = getAssessmentReportArtifact(message) || {};
+  const requestId =
+    artifact?.requestId || artifact?.RequestId || extractRequestIdFromSessionId(sessionId);
+  const reportS3Path = artifact?.assessmentReportS3Path || "";
+  const reportStatus = artifact?.assessmentReportPublishedStatus || "";
+  const reportFileName = fileNameFromS3Path(reportS3Path);
+  const text = extractMessageText(message) || "";
+  const viewerMarkdown =
+    getAssessmentMarkdownForViewer(message || {}, text) ||
+    getAssessmentMarkdownForViewer(
+      { assessmentReportMarkdown: sessionAssessmentMarkdown },
+      sessionAssessmentMarkdown
+    );
+
+  const [loadingAction, setLoadingAction] = useState("");
+  const [statusMsg, setStatusMsg] = useState("");
+  const [generatedDraft, setGeneratedDraft] = useState(null);
+
+  const getPdfUrl = async () => {
+    const token = await getAccessToken();
+    const res = await presignAssessmentReportPdf(
+      {
+        sessionId,
+        userId: user?.email,
+        requestId,
+        reportS3Path,
+      },
+      token
+    );
+    const url = res?.previewUrl || res?.downloadUrl || res?.url || "";
+    if (!url) throw new Error("PDF URL was not returned by backend.");
+    return { url, fileName: res?.fileName || reportFileName };
+  };
+
+  const handlePreviewPdf = async () => {
+    try {
+      setLoadingAction("preview");
+      setStatusMsg("");
+      const { url } = await getPdfUrl();
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (e) {
+      console.error("Assessment PDF preview failed:", e);
+      setStatusMsg(e?.message || "PDF preview failed");
+    } finally {
+      setLoadingAction("");
+    }
+  };
+
+  const handleDownloadPdf = async () => {
+    try {
+      setLoadingAction("download");
+      setStatusMsg("");
+      const { url, fileName } = await getPdfUrl();
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName || reportFileName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } catch (e) {
+      console.error("Assessment PDF download failed:", e);
+      setStatusMsg(e?.message || "PDF download failed");
+    } finally {
+      setLoadingAction("");
+    }
+  };
+
+  const handleGenerateEmail = async () => {
+    try {
+      setLoadingAction("email");
+      setStatusMsg("");
+      const token = await getAccessToken();
+      const res = await generateAssessmentCustomerEmail(
+        {
+          sessionId,
+          userId: user?.email,
+          requestId,
+        },
+        token
+      );
+
+      const draft = res?.emailDraft || null;
+      if (!draft) throw new Error("Email draft was not returned by backend.");
+
+      const finalReportS3Path =
+        reportS3Path ||
+        draft?.assessmentReportS3Path ||
+        draft?.reportS3Path ||
+        "";
+
+      const finalAttachmentFileName =
+        draft?.attachmentFileName ||
+        fileNameFromS3Path(finalReportS3Path, reportFileName);
+
+      setGeneratedDraft({
+        ...draft,
+        type: "email_draft",
+        emailKind: "assessment_report_customer_email",
+        kind: "assessment_report_customer_email",
+        attachAssessmentPdf: true,
+        reportS3Path: finalReportS3Path,
+        assessmentReportS3Path: finalReportS3Path,
+        attachmentFileName: finalAttachmentFileName,
+        attachments: finalReportS3Path
+          ? [
+              {
+                fileName: finalAttachmentFileName,
+                s3Path: finalReportS3Path,
+                reportS3Path: finalReportS3Path,
+                assessmentReportS3Path: finalReportS3Path,
+                type: "application/pdf",
+              },
+            ]
+          : [],
+      });
+      setStatusMsg("Email draft generated with assessment PDF attachment.");
+    } catch (e) {
+      console.error("Generate assessment customer email failed:", e);
+      setStatusMsg(e?.message || "Generate email failed");
+    } finally {
+      setLoadingAction("");
+    }
+  };
+
+  return (
+    <div className="assessmentPdfStack">
+      <div className="assessmentPdfCard">
+        <div className="assessmentPdfHeader">
+          <div className="assessmentPdfIcon" aria-hidden="true">PDF</div>
+          <div className="assessmentPdfHeaderText">
+            <div className="assessmentPdfEyebrow">Assessment report</div>
+            <div className="assessmentPdfTitle">Assessment report package ready</div>
+            <div className="assessmentPdfSubtitle">
+              The final assessment PDF has been published and is ready for customer communication.
+            </div>
+          </div>
+          {reportStatus ? (
+            <div className="assessmentPdfStatusPill">{reportStatus}</div>
+          ) : null}
+        </div>
+
+        {reportS3Path ? (
+          <div className="assessmentPdfFileBox">
+            <div className="assessmentPdfFileIcon" aria-hidden="true">📄</div>
+            <div className="assessmentPdfFileMeta">
+              <div className="assessmentPdfFileLabel">Attached PDF</div>
+              <div className="assessmentPdfFileName" title={reportFileName}>{reportFileName}</div>
+            </div>
+          </div>
+        ) : null}
+
+        <div className="assessmentPdfActionsRow">
+          <div className="assessmentPdfHint">
+            Review or download the published PDF, then generate the customer email with this PDF attached.
+          </div>
+          <div className="assessmentPdfActions">
+            <button type="button" className="assessmentPdfBtn assessmentPdfBtnGhost" disabled={!reportS3Path || loadingAction === "preview"} onClick={handlePreviewPdf}>
+              {loadingAction === "preview" ? "Opening..." : "Preview PDF"}
+            </button>
+            <button type="button" className="assessmentPdfBtn assessmentPdfBtnGhost" disabled={!reportS3Path || loadingAction === "download"} onClick={handleDownloadPdf}>
+              {loadingAction === "download" ? "Downloading..." : "Download PDF"}
+            </button>
+            <button type="button" className="assessmentPdfBtn assessmentPdfBtnPrimary" disabled={!reportS3Path || loadingAction === "email"} onClick={handleGenerateEmail}>
+              {loadingAction === "email" ? "Generating..." : "Generate customer email"}
+            </button>
+          </div>
+        </div>
+
+        {statusMsg ? <div className="assessmentPdfMessage">{statusMsg}</div> : null}
+
+
+      </div>
+
+      {viewerMarkdown ? (
+        <details className="assessmentReportChatToggle">
+          <summary>View full markdown report</summary>
+          <div className="markdown-body assessmentReportChatMarkdown">
+            <MarkdownRenderer text={viewerMarkdown} />
+          </div>
+        </details>
+      ) : null}
+
+      {generatedDraft ? (
+        <div className="assessmentPdfDraftWide">
+          <EmailDraftCard
+            draft={generatedDraft}
+            onSaveDraft={onSaveDraft}
+            onSendEmail={onSendEmail}
+            onPreviewAttachment={handlePreviewPdf}
+            onDownloadAttachment={handleDownloadPdf}
+          />
+        </div>
+      ) : null}
     </div>
   );
 };
@@ -4671,7 +5220,7 @@ const InlineCustomerRequestStarterCard = ({
       </div>
 
       <h2 className="customer-request-inline-title">
-         I will assist you to create a new request / review existing request
+         How can I help you with your customer request today?
       </h2>
 
     
@@ -4697,7 +5246,7 @@ const InlineCustomerRequestStarterCard = ({
           </div>
 
           <div className="customer-request-option-text">
-             Let me assist you by asking few questions. Your response will help me populate the customer request form exactly to your needs. 
+             Share the customer, part, and requirement details. I’ll help you prepare the request step by step.
           </div>
         </button>
 
@@ -4731,7 +5280,7 @@ const InlineCustomerRequestStarterCard = ({
           </div>
 
           <div className="customer-request-option-text">
-             Let me assist you in finding the customer request that you need to work on. You can search using Customer Request Id, Customer Part Number or Name
+             Find a request to review status, customer replies, assessment progress, or next actions.
           </div>
         </button>
       </div>
@@ -5416,6 +5965,11 @@ const ChatWindow = ({
   const normalizedMessages = useMemo(
     () => normalize(cleanedMessages),
     [cleanedMessages, getPreferredCustomerEmail]
+  );
+
+  const activeSessionAssessmentMarkdown = useMemo(
+    () => getAssessmentMarkdownFromSessionData(chat || {}),
+    [chat]
   );
 
   const activeSupplierTaskForReview = useMemo(() => {
@@ -6930,6 +7484,97 @@ const ChatWindow = ({
     [updateMessages, refreshSidebar]
   );
 
+
+  const resolveEmailAttachmentReportPath = (file = {}) => {
+    return String(
+      file?.s3Path ||
+        file?.reportS3Path ||
+        file?.assessmentReportS3Path ||
+        file?.attachmentS3Path ||
+        file?.reportPublishedFilePath ||
+        ""
+    ).trim();
+  };
+
+  const handlePreviewEmailAttachment = async (file = {}) => {
+    try {
+      const reportS3Path = resolveEmailAttachmentReportPath(file);
+      if (!reportS3Path) {
+        throw new Error("Attachment PDF path is missing.");
+      }
+
+      const token = await getAccessToken();
+      const res = await presignAssessmentReportPdf(
+        {
+          sessionId: getActiveSessionId(),
+          userId: user?.email,
+          requestId:
+            file?.requestId ||
+            file?.RequestId ||
+            extractRequestIdFromSessionId(getActiveSessionId()),
+          reportS3Path,
+        },
+        token
+      );
+
+      const url = res?.previewUrl || res?.downloadUrl || res?.url || "";
+      if (!url) throw new Error("PDF URL was not returned by backend.");
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (e) {
+      console.error("Email attachment preview failed:", e);
+      addMessage({
+        sender: "bot",
+        role: "assistant",
+        text: `❌ ${e?.message || "Attachment preview failed"}`,
+      });
+    }
+  };
+
+  const handleDownloadEmailAttachment = async (file = {}) => {
+    try {
+      const reportS3Path = resolveEmailAttachmentReportPath(file);
+      if (!reportS3Path) {
+        throw new Error("Attachment PDF path is missing.");
+      }
+
+      const token = await getAccessToken();
+      const res = await presignAssessmentReportPdf(
+        {
+          sessionId: getActiveSessionId(),
+          userId: user?.email,
+          requestId:
+            file?.requestId ||
+            file?.RequestId ||
+            extractRequestIdFromSessionId(getActiveSessionId()),
+          reportS3Path,
+        },
+        token
+      );
+
+      const url = res?.downloadUrl || res?.previewUrl || res?.url || "";
+      if (!url) throw new Error("PDF URL was not returned by backend.");
+
+      const a = document.createElement("a");
+      a.href = url;
+      a.download =
+        res?.fileName ||
+        file?.fileName ||
+        file?.FileName ||
+        fileNameFromS3Path(reportS3Path);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } catch (e) {
+      console.error("Email attachment download failed:", e);
+      addMessage({
+        sender: "bot",
+        role: "assistant",
+        text: `❌ ${e?.message || "Attachment download failed"}`,
+      });
+    }
+  };
+
+
   const handleSendEmailDraft = async (draft) => {
     try {
       const to = String(draft?.to || "").trim();
@@ -6948,7 +7593,11 @@ const ChatWindow = ({
 
       const customerPart = `${formDraft?.CustomerPartNumber || extractPartNumberFromSessionId(workingSessionId) || ""}#${formDraft?.CustomerPartName || extractPartNameFromSessionId(workingSessionId) || ""}`.replace(/^#|#$/g, "");
 
-      const compactEmailBody = isSupplierDraft
+      const isAssessmentReportEmail =
+        String(lockedDraft?.emailKind || lockedDraft?.kind || "").trim() ===
+          "assessment_report_customer_email" || Boolean(lockedDraft?.attachAssessmentPdf);
+
+      const compactEmailBody = isSupplierDraft || isAssessmentReportEmail
         ? ""
         : buildCompactCustomerEmailBody({
             requestId,
@@ -6963,7 +7612,7 @@ const ChatWindow = ({
             engineeringContactEmailId: user?.email || "",
           });
 
-      const body = isSupplierDraft ? originalBody : compactEmailBody || originalBody;
+      const body = isSupplierDraft || isAssessmentReportEmail ? originalBody : compactEmailBody || originalBody;
       const confirmationMarkdown = body;
 
       if (!to) {
@@ -7005,8 +7654,15 @@ const ChatWindow = ({
           body,
           requestId,
           RequestConfirmationEmail: confirmationMarkdown,
-          emailKind: isSupplierDraft ? "supplier_fmd_request" : "customer_request_email",
+          emailKind: isSupplierDraft
+            ? "supplier_fmd_request"
+            : lockedDraft?.emailKind || lockedDraft?.kind || "customer_request_email",
           isSupplierEmail: isSupplierDraft,
+          attachAssessmentPdf: Boolean(lockedDraft?.attachAssessmentPdf),
+          reportS3Path: lockedDraft?.reportS3Path || lockedDraft?.assessmentReportS3Path || "",
+          assessmentReportS3Path: lockedDraft?.assessmentReportS3Path || lockedDraft?.reportS3Path || "",
+          attachmentFileName: lockedDraft?.attachmentFileName || "",
+          attachments: Array.isArray(lockedDraft?.attachments) ? lockedDraft.attachments : [],
         },
         token
       );
@@ -7163,41 +7819,23 @@ const ChatWindow = ({
         reviewRes?.SessionId ||
         workingSessionId;
 
-      const customerPartNumber =
-        formDraft?.CustomerPartNumber ||
-        formDraft?.customerPartNumber ||
-        extractPartNumberFromSessionId(finalSessionId);
-
-      const customerPartName =
-        formDraft?.CustomerPartName ||
-        formDraft?.customerPartName ||
-        extractPartNameFromSessionId(finalSessionId);
-
-      const customerPartKey =
-        formDraft?.CustomerPartKey ||
-        formDraft?.customerPartKey ||
-        [customerPartNumber, customerPartName].filter(Boolean).join("#");
-
-      const engineeringPartKey =
-        formDraft?.EngineeringPartKey ||
-        formDraft?.engineeringPartKey ||
-        formDraft?.EngPartkey ||
-        formDraft?.engPartkey ||
-        customerPartNumber ||
-        customerPartKey;
-
       // Step 2: trigger the only assessment endpoint allowed by KC:
       // /fmd-assessment -> FMD Core Engine AgentCore runtime.
+      // KC working payload:
+      // WorkflowName, WorkflowRunId, WorkflowRunType=Full,
+      // CustomerName, CustomerRequestId, ChatSessionId, ChatUserId,
+      // DelegationCapacity, EngineeringPartKey.
       const fmdRes = await triggerFmdAssessment(
         {
-          requestId: finalRequestId,
-          customerRequestId: finalRequestId,
-          chatSessionId: finalSessionId,
-          chatUserId: user?.email,
-          workflowRunType: "Full",
-          delegationCapacity: "3",
-          customerPartKey,
-          engineeringPartKey,
+          WorkflowName: "FMD",
+          WorkflowRunId: makeKcWorkflowRunId(),
+          WorkflowRunType: "Full",
+          CustomerName: "General Motors",
+          CustomerRequestId: finalRequestId,
+          ChatSessionId: finalSessionId,
+          ChatUserId: user?.email,
+          DelegationCapacity: "3",
+          EngineeringPartKey: "BRK-7700#High-Perf Brake Assy",
         },
         token
       );
@@ -7885,11 +8523,22 @@ const ChatWindow = ({
                         onSelectOption={handleFlowOptionSelect}
                         onSubmitManualInput={handleManualFlowSubmit}
                       />
-                    ) : m.emailDraft ? (
-                      <EmailDraftCard
-                        draft={m.emailDraft}
+                    ) : isAssessmentReportMessage(m) ? (
+                      <AssessmentReportCard
+                        message={m}
+                        sessionAssessmentMarkdown={activeSessionAssessmentMarkdown}
+                        user={user}
+                        sessionId={getActiveSessionId()}
                         onSaveDraft={handleSaveEmailDraft}
                         onSendEmail={handleSendEmailDraft}
+                      />
+                    ) : getMessageEmailDraft(m) ? (
+                      <EmailDraftCard
+                        draft={getMessageEmailDraft(m)}
+                        onSaveDraft={handleSaveEmailDraft}
+                        onSendEmail={handleSendEmailDraft}
+                        onPreviewAttachment={handlePreviewEmailAttachment}
+                        onDownloadAttachment={handleDownloadEmailAttachment}
                       />
                     ) : shouldRenderSupplierTaskCard ? (
                       <SupplierTaskCard
@@ -7918,6 +8567,7 @@ const ChatWindow = ({
                       !m.supplierTask &&
                       !m.flowType &&
                       !hasSupplierUploadedDocsMarkdown(m.text || "", m.artifact) &&
+                      !isAssessmentReportMessage(m) &&
                       !isPreparedFormMessage(m.text || "") &&
                       !isCustomerFlowQuestionText(m.text || "") &&
                       renderArtifact(m)}
