@@ -8371,6 +8371,10 @@ const ChatWindow = ({
   );
 
   const canShowEmailReviewActionCard = useMemo(() => {
+    // Request Monitoring & Status should only show the dashboard/status view.
+    // Do not show old EMAIL-REVIEW action cards here because they confuse the
+    // monitoring screen with customer-request action flow.
+    if (isRequestMonitoringSession) return false;
     if (isActiveSupplierTaskSession) return false;
     if (!hasEmailReviewSignal(normalizedMessages)) return false;
 
@@ -8379,12 +8383,13 @@ const ChatWindow = ({
       return (
         text.includes("request-confirmed") ||
         text.includes("submitted for assessment") ||
-        text.includes("email review completed")
+        text.includes("email review completed") ||
+        text.includes("request-closed")
       );
     });
 
     return !alreadySubmitted;
-  }, [normalizedMessages, isActiveSupplierTaskSession]);
+  }, [normalizedMessages, isActiveSupplierTaskSession, isRequestMonitoringSession]);
 
   const renderFormMessageRow = (key) => (
     <div key={key} className="msg-row bot">
@@ -8493,6 +8498,19 @@ const ChatWindow = ({
             )}
 
             {normalizedMessages.map((m, index) => {
+              if (isRequestMonitoringSession) {
+                const artifactType = String(m?.artifact?.type || "").toLowerCase();
+                const textLower = String(extractMessageText(m) || m?.text || "").toLowerCase();
+
+                const isEmailReviewOnlyMessage =
+                  artifactType === "email_review_task" ||
+                  textLower.includes("customer email reply received") ||
+                  textLower.includes("status moved to email-review") ||
+                  textLower.includes("submit for assessment");
+
+                if (isEmailReviewOnlyMessage) return null;
+              }
+
               const workflowAnchorId = isRequestMonitoringSession
                 ? null
                 : workflowAnchorIdsByMessageIndex[index];
