@@ -511,6 +511,32 @@ const isEmailSentConfirmationText = (text = "") => {
 };
 
 
+const cleanRequestMonitoringDashboardText = (text = "") => {
+  const raw = String(text || "");
+  if (!raw.trim()) return raw;
+
+  const lines = raw.split(/\r?\n/);
+  let dashboardTitleSeen = 0;
+
+  const cleaned = lines.filter((line) => {
+    const normalized = String(line || "")
+      .replace(/^\s*#+\s*/, "")
+      .replace(/^\s*📊\s*/, "")
+      .trim()
+      .toLowerCase();
+
+    if (normalized === "request monitoring dashboard") {
+      dashboardTitleSeen += 1;
+      return dashboardTitleSeen === 1;
+    }
+
+    return true;
+  });
+
+  return cleaned.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+};
+
+
 const getAssessmentReportArtifact = (message = {}) => {
   const artifact = message?.artifact || {};
   const artifactType = String(artifact?.type || artifact?.artifactType || "")
@@ -5932,6 +5958,19 @@ const ChatWindow = ({
       const isEmail =
         !!m?.emailDraft || (sender === "bot" && looksLikeEmailDraft(text));
 
+      // When an email has just been sent, hide the old draft card immediately.
+      // Backend history already shows only the compact success after refresh;
+      // this keeps the live UI consistent without needing a refresh.
+      const hasLaterEmailSentConfirmation = dedupedRaw
+        .slice(idx + 1)
+        .some((nextItem) =>
+          isEmailSentConfirmationText(
+            extractMessageText(nextItem) || nextItem?.text || ""
+          )
+        );
+
+      if (isEmail && hasLaterEmailSentConfirmation) return false;
+
       const next = dedupedRaw[idx + 1];
       const prev = dedupedRaw[idx - 1];
       const nextQuestion = String(
@@ -6045,6 +6084,68 @@ const ChatWindow = ({
     const messageStatus = extractCurrentRequestStatusFromMessages(normalizedMessages);
     const hasSupplierPending = hasSupplierPendingAssessmentSignal(normalizedMessages);
 
+    // Final state must always win.
+    // Older assessment messages/cards can still remain in chat history after closure,
+    // so if any latest message confirms REQUEST-CLOSED, do not allow the supplier
+    // pending rule to push the timeline back to ASSESSMENT-INPROGRESS.
+    const hasRequestClosedSignal = (Array.isArray(normalizedMessages) ? normalizedMessages : []).some((m) => {
+      const artifact = m?.artifact || {};
+      const artifactStatus = normalizeWorkflowStatus(
+        artifact?.RequestStatus ||
+          artifact?.requestStatus ||
+          m?.RequestStatus ||
+          m?.requestStatus ||
+          ""
+      );
+      const text = [
+        extractMessageText(m),
+        m?.text,
+        typeof m?.content === "string" ? m.content : "",
+        artifact ? safeJsonStringify(artifact) : "",
+      ]
+        .filter(Boolean)
+        .join("
+")
+        .toLowerCase();
+
+      return (
+        artifactStatus === "REQUEST-CLOSED" ||
+        text.includes("request-closed") ||
+        text.includes("status moved to request-closed") ||
+        text.includes("no further action required") ||
+        text.includes("customer acknowledged the final assessment report")
+      );
+    });
+
+    if (backendStatus === "REQUEST-CLOSED" || messageStatus === "REQUEST-CLOSED" || hasRequestClosedSignal) {
+      return "REQUEST-CLOSED";
+    }
+
+    // Results-submitted should also win over older supplier/assessment pending signals.
+    // Otherwise the right-side progress bar can jump backward after final email send.
+    const hasResultsSubmittedSignal = (Array.isArray(normalizedMessages) ? normalizedMessages : []).some((m) => {
+      const text = [
+        extractMessageText(m),
+        m?.text,
+        typeof m?.content === "string" ? m.content : "",
+        m?.artifact ? safeJsonStringify(m.artifact) : "",
+      ]
+        .filter(Boolean)
+        .join("
+")
+        .toLowerCase();
+
+      return (
+        text.includes("results-submitted") ||
+        text.includes("status moved to results-submitted") ||
+        text.includes("email sent successfully")
+      );
+    });
+
+    if (backendStatus === "RESULTS-SUBMITTED" || messageStatus === "RESULTS-SUBMITTED" || hasResultsSubmittedSignal) {
+      return "RESULTS-SUBMITTED";
+    }
+
     // KC/FMD rule:
     // If supplier FMD task/email is created, assessment is still in progress.
     // Do not let an older REQUEST-CONFIRMED form/sidebar value keep the
@@ -6061,9 +6162,8 @@ const ChatWindow = ({
 
     // Priority:
     // 1) real status refreshed from backend/DynamoDB
-    // 2) supplier pending signal from chat
-    // 3) current form state
-    // 4) fallback from chat messages
+    // 2) current form state
+    // 3) fallback from chat messages
     return backendStatus || formStatus || messageStatus;
   }, [currentRequestStatusOverride, formDraft, normalizedMessages]);
 
@@ -8577,7 +8677,11 @@ const ChatWindow = ({
                       />
                     ) : (
                       <MarkdownRenderer
-                        text={m.text || ""}
+                        text={
+                          isRequestMonitoringSession
+                            ? cleanRequestMonitoringDashboardText(m.text || "")
+                            : m.text || ""
+                        }
                         onRequestRowClick={handleRequestRowClick}
                       />
                     )}
