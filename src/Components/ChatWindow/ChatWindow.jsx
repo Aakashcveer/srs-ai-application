@@ -511,6 +511,67 @@ const isEmailSentConfirmationText = (text = "") => {
 };
 
 
+const isEmptyEmailDraft = (draft = {}) => {
+  if (!draft || typeof draft !== "object") return true;
+
+  // React elements can accidentally enter emailDraft state when a success
+  // confirmation is returned from a normalizer. They are not editable drafts.
+  if (draft?.$$typeof || draft?.props) return true;
+
+  const artifactType = String(draft?.type || draft?.artifactType || "")
+    .trim()
+    .toLowerCase();
+
+  if ([
+    "customer_email_sent",
+    "assessment_email_sent",
+    "supplier_email_sent",
+    "email_sent",
+  ].includes(artifactType)) {
+    return true;
+  }
+
+  const body = String(draft?.body || draft?.Body || "").trim();
+  const subject = String(draft?.subject || draft?.Subject || "").trim();
+  const to = String(
+    draft?.to ||
+      draft?.To ||
+      draft?.toEmail ||
+      draft?.ToEmail ||
+      ""
+  ).trim();
+  const attachmentName = String(
+    draft?.attachmentFileName ||
+      draft?.AttachmentFileName ||
+      draft?.assessmentReportS3Path ||
+      draft?.reportS3Path ||
+      ""
+  ).trim();
+
+  return !to && !subject && !body && !attachmentName;
+};
+
+const hasCustomerEmailSentConfirmationInMessages = (messages = []) => {
+  return (Array.isArray(messages) ? messages : []).some((message) => {
+    const artifactType = String(
+      message?.artifact?.type || message?.artifact?.artifactType || ""
+    )
+      .trim()
+      .toLowerCase();
+
+    const text = String(
+      extractMessageText(message) || message?.text || ""
+    ).toLowerCase();
+
+    return (
+      artifactType === "customer_email_sent" ||
+      (text.includes("email sent successfully") &&
+        text.includes("request-review"))
+    );
+  });
+};
+
+
 const cleanRequestMonitoringDashboardText = (text = "") => {
   const raw = String(text || "");
   if (!raw.trim()) return raw;
@@ -680,7 +741,7 @@ const getMessageEmailDraft = (message = {}) => {
   const directDraft = message?.emailDraft || message?.EmailDraft || null;
 
   if (directDraft && typeof directDraft === "object") {
-    return directDraft;
+    return isEmptyEmailDraft(directDraft) ? null : directDraft;
   }
 
   const artifactType = String(artifact?.type || artifact?.artifactType || "")
@@ -690,12 +751,24 @@ const getMessageEmailDraft = (message = {}) => {
     .trim()
     .toLowerCase();
 
+  // Sent-email confirmation artifacts are not editable drafts.
+  // Render them as normal success messages so the UI does not show an empty
+  // "Customer Email Draft" card after clicking Send Email.
+  if ([
+    "customer_email_sent",
+    "assessment_email_sent",
+    "supplier_email_sent",
+    "email_sent",
+  ].includes(artifactType)) {
+    return null;
+  }
+
   if (
     artifactType === "email_draft" ||
     emailKind === "assessment_report_customer_email" ||
     emailKind === "customer_request_email"
   ) {
-    return {
+    const normalizedDraft = {
       ...artifact,
       type: "email_draft",
       emailKind: artifact?.emailKind || artifact?.kind || "customer_request_email",
@@ -711,6 +784,8 @@ const getMessageEmailDraft = (message = {}) => {
       attachAssessmentPdf: Boolean(artifact?.attachAssessmentPdf),
       requestId: artifact?.requestId || artifact?.RequestId || "",
     };
+
+    return isEmptyEmailDraft(normalizedDraft) ? null : normalizedDraft;
   }
 
   return null;
@@ -1591,20 +1666,10 @@ const EmailReviewActionCard = ({
         <div style={styles.actionWrap}>
           <button
             type="button"
-            style={styles.secondaryBtn}
-            onClick={onRequestChanges}
-            disabled={loading}
-            title="Open the request form to update date, quantity, priority, or details before resending to the customer."
-          >
-            Request Changes
-          </button>
-
-          <button
-            type="button"
             className="formSaveBtn premiumFormSaveBtn"
             onClick={onSubmitForAssessment}
             disabled={loading}
-            style={{ minWidth: "190px", minHeight: "48px" }}
+            style={{ minWidth: "220px", minHeight: "48px" }}
           >
             {loading ? "Submitting..." : "Submit for Assessment"}
           </button>
@@ -1806,7 +1871,12 @@ const normalizeEmailDraft = (msg = {}, text = "", fallbackTo = "") => {
     .toLowerCase()
     .trim();
 
-  if (artifactType === "supplier_email_sent") {
+  if ([
+    "customer_email_sent",
+    "assessment_email_sent",
+    "supplier_email_sent",
+    "email_sent",
+  ].includes(artifactType)) {
     return null;
   }
 
@@ -1869,7 +1939,9 @@ const normalizeEmailDraft = (msg = {}, text = "", fallbackTo = "") => {
     isSupplierEmailDraft(directDraft || artifact || {}, text) ||
     Boolean(supplierDraftFromText);
 
-  if (subject || body || to || supplierDraftFromText) {
+  const hasRealDraftSource = Boolean(directDraft) || artifactType === "email_draft" || Boolean(supplierDraftFromText);
+
+  if (hasRealDraftSource && (subject || body || to || supplierDraftFromText)) {
     return {
       to,
       from,
@@ -1885,12 +1957,8 @@ const normalizeEmailDraft = (msg = {}, text = "", fallbackTo = "") => {
     };
   }
 
-  if (isEmailSentConfirmationText(text || '')) {
-
-
-    return <EmailSentConfirmationCard text={text || ''} />;
-
-
+  if (isEmailSentConfirmationText(text || "")) {
+    return null;
   }
 
 
@@ -3708,7 +3776,7 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail, onPreviewAttachment, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft]);
 
-  if (!draft) return null;
+  if (!draft || isEmptyEmailDraft(draft)) return null;
 
   const updateField = (key, value) => {
     if (key === "from") return;
@@ -4199,6 +4267,104 @@ const defaultFormTemplate = () => ({
 
 const PRIORITY_OPTIONS = ["Low", "Medium", "High", "Critical"];
 
+const normalizeCustomerEmailValue = (value = "") => String(value ?? "").trim();
+
+const extractCustomerEmailFromDraft = (draft = {}) => {
+  const safe = draft && typeof draft === "object" ? draft : {};
+  const customerDetail = safe.CustomerDetail || safe.CustomerDetails || {};
+
+  const directEmail = normalizeCustomerEmailValue(
+    safe.CustomerEmail ??
+      safe.customerEmail ??
+      safe.CustomerContactEmailId ??
+      safe.CustomerContactEmail ??
+      safe.customerContactEmailId ??
+      safe.customerContactEmail ??
+      customerDetail.CustomerContactEmailId ??
+      customerDetail.CustomerContactEmail ??
+      customerDetail.customerContactEmailId ??
+      customerDetail.customerContactEmail ??
+      ""
+  );
+
+  if (directEmail) return directEmail;
+
+  const fieldEmail = Array.isArray(safe.fields)
+    ? safe.fields.find((field) => {
+        const key = String(field?.key || "").trim().toLowerCase();
+        const label = String(field?.label || "").trim().toLowerCase();
+        return (
+          key === "customeremail" ||
+          key === "customercontactemailid" ||
+          key === "customercontactemail" ||
+          label === "customer email"
+        );
+      })
+    : null;
+
+  return normalizeCustomerEmailValue(fieldEmail?.value ?? "");
+};
+
+const withCustomerEmailPayload = (payload = {}) => {
+  const safe = payload && typeof payload === "object" ? payload : {};
+  const customerEmail = extractCustomerEmailFromDraft(safe);
+
+  const next = {
+    ...safe,
+    CustomerEmail: customerEmail,
+    customerEmail,
+    CustomerContactEmailId: customerEmail,
+    CustomerContactEmail: customerEmail,
+    CustomerDetail: {
+      ...(safe.CustomerDetail || {}),
+      CustomerContactEmailId: customerEmail,
+      CustomerContactEmail: customerEmail,
+    },
+    CustomerDetails: {
+      ...(safe.CustomerDetails || safe.CustomerDetail || {}),
+      CustomerContactEmailId: customerEmail,
+      CustomerContactEmail: customerEmail,
+    },
+  };
+
+  if (Array.isArray(safe.fields)) {
+    let foundCustomerEmailField = false;
+
+    next.fields = safe.fields.map((field) => {
+      const key = String(field?.key || "").trim();
+      const label = String(field?.label || "").trim().toLowerCase();
+      const isCustomerEmailField =
+        key === "CustomerEmail" ||
+        key === "CustomerContactEmailId" ||
+        key === "CustomerContactEmail" ||
+        label === "customer email";
+
+      if (!isCustomerEmailField) return field;
+
+      foundCustomerEmailField = true;
+      return {
+        ...(field || {}),
+        key: "CustomerEmail",
+        label: field?.label || "Customer Email",
+        type: field?.type || "email",
+        value: customerEmail,
+      };
+    });
+
+    if (!foundCustomerEmailField) {
+      next.fields.push({
+        key: "CustomerEmail",
+        label: "Customer Email",
+        type: "email",
+        value: customerEmail,
+        required: false,
+      });
+    }
+  }
+
+  return next;
+};
+
 const buildCustomerRequestFormDraft = (raw = {}) => {
   const safe = raw && typeof raw === "object" ? raw : {};
   const requestDetail = safe.RequestDetail || safe.RequestDetails || {};
@@ -4230,14 +4396,11 @@ const buildCustomerRequestFormDraft = (raw = {}) => {
   const notifyCustomer = Boolean(
     safe.NotifyCustomer ?? safe.notifyCustomer ?? false
   );
-  const customerEmail =
-    safe.CustomerEmail ??
-    safe.customerEmail ??
-    safe.CustomerContactEmail ??
-    safe.CustomerContactEmailId ??
-    customerDetail.CustomerContactEmailId ??
-    customerDetail.CustomerContactEmail ??
-    "";
+  const customerEmail = extractCustomerEmailFromDraft({
+    ...safe,
+    CustomerDetail: customerDetail,
+    CustomerDetails: customerDetail,
+  });
 
   const existingFields = Array.isArray(safe.fields) ? safe.fields : [];
 
@@ -4383,22 +4546,32 @@ const FormEditorCard = ({
     setFormDraft((prev) => {
       if (!prev) return prev;
 
-      const previousValue = prev[key];
       const next = { ...prev, [key]: nextVal };
       next.fields = (next.fields || []).map((f) =>
         f.key === key ? { ...f, value: nextVal } : f
       );
 
-      if (
-        key === "NotifyCustomer" &&
-        Boolean(previousValue) === false &&
-        Boolean(nextVal) === true
-      ) {
-        setTimeout(() => {
-          onNotifyCustomerSelected?.(next);
-        }, 0);
+      if (key === "CustomerEmail") {
+        const customerEmailValue = normalizeCustomerEmailValue(nextVal);
+        next.CustomerEmail = customerEmailValue;
+        next.customerEmail = customerEmailValue;
+        next.CustomerContactEmailId = customerEmailValue;
+        next.CustomerContactEmail = customerEmailValue;
+        next.CustomerDetail = {
+          ...(next.CustomerDetail || {}),
+          CustomerContactEmailId: customerEmailValue,
+          CustomerContactEmail: customerEmailValue,
+        };
+        next.CustomerDetails = {
+          ...(next.CustomerDetails || next.CustomerDetail || {}),
+          CustomerContactEmailId: customerEmailValue,
+          CustomerContactEmail: customerEmailValue,
+        };
       }
 
+      // Do not auto-generate an email immediately when Notify Customer is checked.
+      // For "Others", the engineer must first enter the manual Customer Email.
+      // The Generate Email Draft button will call onGenerateEmailDraft after validation.
       return next;
     });
   };
@@ -4531,6 +4704,8 @@ const FormEditorCard = ({
   const selectedPriority = String(getFieldValue(priorityField) || "Medium");
   const notifyCustomer = Boolean(getValueByKey("NotifyCustomer"));
   const customerEmail = String(getValueByKey("CustomerEmail") || "").trim();
+  const isOtherCustomer = customerName.toLowerCase() === "others";
+  const manualCustomerEmailRequired = notifyCustomer && isOtherCustomer;
 
   const requiredChecks = [
     { key: "CustomerName", label: "Customer Name", value: customerName },
@@ -4555,6 +4730,14 @@ const FormEditorCard = ({
     { key: "RequestPriority", label: "Request Priority", value: selectedPriority },
   ];
 
+  if (manualCustomerEmailRequired) {
+    requiredChecks.push({
+      key: "CustomerEmail",
+      label: "Customer Email",
+      value: customerEmail,
+    });
+  }
+
   const missingRequired = requiredChecks.filter(
     (item) => !String(item.value || "").trim()
   );
@@ -4578,8 +4761,11 @@ const FormEditorCard = ({
       f.key === "RequestCompletionDate" ||
       String(f.label || "").toLowerCase().includes("date");
 
+    const isRequiredForThisField =
+      Boolean(f.required) || (f.key === "CustomerEmail" && manualCustomerEmailRequired);
+
     const isInvalid =
-      f.required &&
+      isRequiredForThisField &&
       !String(value || "").trim() &&
       missingRequired.some((m) => m.key === f.key);
 
@@ -4611,7 +4797,9 @@ const FormEditorCard = ({
       >
         <label className="premiumFormLabel">
           {f.label}
-          {f.required ? <span className="premiumFormReq">*</span> : null}
+          {(f.required || (f.key === "CustomerEmail" && manualCustomerEmailRequired)) ? (
+            <span className="premiumFormReq">*</span>
+          ) : null}
         </label>
 
         {isTextarea ? (
@@ -4823,9 +5011,16 @@ const FormEditorCard = ({
             {notifyCustomer ? (
               <div className="premiumFormGrid">
                 <div className="premiumFormGroup premiumFormGroupFull">
-                  <label className="premiumFormLabel">Customer Email</label>
+                  <label className="premiumFormLabel">
+                    Customer Email
+                    {manualCustomerEmailRequired ? (
+                      <span className="premiumFormReq">*</span>
+                    ) : null}
+                  </label>
                   <input
-                    className="premiumFormInput"
+                    className={`premiumFormInput ${
+                      manualCustomerEmailRequired && !customerEmail ? "is-invalid" : ""
+                    }`}
                     type="email"
                     value={customerEmail}
                     onChange={(e) =>
@@ -4833,6 +5028,15 @@ const FormEditorCard = ({
                     }
                     placeholder="customer@example.com"
                   />
+                  {manualCustomerEmailRequired && !customerEmail ? (
+                    <div className="premiumFieldError">
+                      Customer email is required when Customer Name is Others.
+                    </div>
+                  ) : (
+                    <div className="premiumFieldHelp">
+                      For customers from RDS this can be auto-filled. For Others, enter it manually.
+                    </div>
+                  )}
                 </div>
 
                 <div className="premiumFormGroup premiumFormGroupFull">
@@ -4859,7 +5063,7 @@ const FormEditorCard = ({
               <div className="premiumFormFooterSub">
                 {formReady
                   ? notifyCustomer
-                    ? "Customer notification is enabled. Email draft generation will start directly."
+                    ? "Customer notification is enabled. Click Generate Email Draft when ready."
                     : "Review the summary and save this request."
                   : `${missingRequired.length} required field${
                       missingRequired.length > 1 ? "s are" : " is"
@@ -5928,11 +6132,60 @@ const ChatWindow = ({
         .filter(Boolean)
     );
 
+    // Live-send cleanup:
+    // After the customer confirmation email is sent, backend refresh shows only
+    // the compact success message. Before refresh, the old draft card can still
+    // be present in React state, so hide any previous email draft in this
+    // session as soon as a send success exists anywhere in the message list.
+    const hasAnyEmailSentConfirmation = dedupedRaw.some((item) => {
+      const artifactType = String(
+        item?.artifact?.type || item?.artifact?.artifactType || ""
+      )
+        .trim()
+        .toLowerCase();
+
+      return (
+        isEmailSentConfirmationText(
+          extractMessageText(item) || item?.text || ""
+        ) ||
+        [
+          "customer_email_sent",
+          "assessment_email_sent",
+          "supplier_email_sent",
+          "email_sent",
+        ].includes(artifactType)
+      );
+    });
+
     return dedupedRaw.filter((m, idx) => {
       const sender = extractMessageSender(m);
       const text = String(extractMessageText(m) || "").trim().toLowerCase();
 
       if (isSystemFlowMarkerText(text)) return false;
+
+      // Hide raw backend/user marker rows like:
+      // SEND_EMAIL
+      // To: ...
+      // Subject: ...
+      // The assistant success card/message below is the user-facing result.
+      if (sender === "user" && text.startsWith("send_email")) return false;
+
+      // Hide the old user action bubble after send succeeds. The success card is
+      // enough; keeping "generate email draft" on the right makes it look like
+      // the email flow is still pending.
+      if (
+        sender === "user" &&
+        hasAnyEmailSentConfirmation &&
+        [
+          "generate email draft",
+          "generate mail draft",
+          "draft email",
+          "draft mail",
+          "__generate_customer_email_draft__",
+        ].includes(text)
+      ) {
+        return false;
+      }
 
       if (isCustomerRequestStarterSession) {
         if (
@@ -5955,21 +6208,34 @@ const ChatWindow = ({
       const hasArtifact = !!m?.artifact;
       const isFlowCard =
         m?.flowType === "customer_request" || isCustomerFlowQuestionText(text);
+      const normalizedDraft = normalizeEmailDraft(
+        m,
+        extractMessageText(m) || m?.text || "",
+        getPreferredCustomerEmail(m)
+      );
+
+      const artifactTypeForDraftCheck = String(
+        m?.artifact?.type || m?.artifact?.artifactType || ""
+      )
+        .trim()
+        .toLowerCase();
+
+      const isSentEmailArtifact = [
+        "customer_email_sent",
+        "assessment_email_sent",
+        "supplier_email_sent",
+        "email_sent",
+      ].includes(artifactTypeForDraftCheck);
+
       const isEmail =
-        !!m?.emailDraft || (sender === "bot" && looksLikeEmailDraft(text));
+        !!m?.emailDraft ||
+        !!normalizedDraft ||
+        (sender === "bot" && looksLikeEmailDraft(text));
 
-      // When an email has just been sent, hide the old draft card immediately.
-      // Backend history already shows only the compact success after refresh;
-      // this keeps the live UI consistent without needing a refresh.
-      const hasLaterEmailSentConfirmation = dedupedRaw
-        .slice(idx + 1)
-        .some((nextItem) =>
-          isEmailSentConfirmationText(
-            extractMessageText(nextItem) || nextItem?.text || ""
-          )
-        );
-
-      if (isEmail && hasLaterEmailSentConfirmation) return false;
+      // Keep the generated email draft visible after sending.
+      // The sent-email artifact itself is already blocked by normalizeEmailDraft(),
+      // so this preserves the real draft card while still avoiding the old empty
+      // sent-email draft card bug.
 
       const next = dedupedRaw[idx + 1];
       const prev = dedupedRaw[idx - 1];
@@ -6136,7 +6402,8 @@ const ChatWindow = ({
       return (
         text.includes("results-submitted") ||
         text.includes("status moved to results-submitted") ||
-        text.includes("email sent successfully")
+        text.includes("with attached assessment pdf") ||
+        text.includes("assessment pdf")
       );
     });
 
@@ -6972,7 +7239,7 @@ const ChatWindow = ({
   };
 
   const buildNormalizedFormPayload = (draftOverride = null) => {
-    const baseDraft = draftOverride || formDraft || {};
+    const baseDraft = withCustomerEmailPayload(draftOverride || formDraft || {});
 
     const activeSessionId = getActiveSessionId();
     const activeRequestId = extractRequestIdFromSessionId(activeSessionId);
@@ -7055,12 +7322,16 @@ const ChatWindow = ({
         ""
     ).trim();
 
-    const latestCustomerEmail = String(
+    const latestCustomerEmail = normalizeCustomerEmailValue(
       visibleFieldValues.CustomerEmail ??
+        visibleFieldValues.CustomerContactEmailId ??
         normalizedPayload.CustomerEmail ??
         normalizedPayload.CustomerContactEmailId ??
+        normalizedPayload.CustomerDetail?.CustomerContactEmailId ??
+        normalizedPayload.CustomerDetails?.CustomerContactEmailId ??
+        extractCustomerEmailFromDraft(baseDraft) ??
         ""
-    ).trim();
+    );
 
     const latestNotifyCustomer =
       visibleFieldValues.NotifyCustomer !== undefined
@@ -7107,12 +7378,22 @@ const ChatWindow = ({
     };
 
     normalizedPayload.CustomerDetail = {
+      ...(normalizedPayload.CustomerDetail || {}),
       CustomerPartNumber: normalizedPayload.CustomerPartNumber || "",
       CustomerPartName: normalizedPayload.CustomerPartName || "",
       CustomerContactEmailId: normalizedPayload.CustomerEmail || "",
+      CustomerContactEmail: normalizedPayload.CustomerEmail || "",
     };
 
-    return normalizedPayload;
+    normalizedPayload.CustomerDetails = {
+      ...(normalizedPayload.CustomerDetails || normalizedPayload.CustomerDetail || {}),
+      CustomerPartNumber: normalizedPayload.CustomerPartNumber || "",
+      CustomerPartName: normalizedPayload.CustomerPartName || "",
+      CustomerContactEmailId: normalizedPayload.CustomerEmail || "",
+      CustomerContactEmail: normalizedPayload.CustomerEmail || "",
+    };
+
+    return withCustomerEmailPayload(normalizedPayload);
   };
 
   const handleSaveForm = async () => {
@@ -7131,7 +7412,7 @@ const ChatWindow = ({
         session: {
           SessionId: workingSessionId,
         },
-        payload: normalizedPayload,
+        payload: withCustomerEmailPayload(normalizedPayload),
       };
 
       const res = await saveGeneratedForm(requestBody, token);
@@ -7184,6 +7465,23 @@ const ChatWindow = ({
         const token = await getAccessToken();
         const workingSessionId = getActiveSessionId();
         const normalizedPayload = buildNormalizedFormPayload(draftOverride);
+        const selectedCustomerName = String(normalizedPayload.CustomerName || "").trim().toLowerCase();
+        const selectedCustomerEmail = String(
+          normalizedPayload.CustomerEmail ||
+            normalizedPayload.CustomerContactEmailId ||
+            normalizedPayload.CustomerDetail?.CustomerContactEmailId ||
+            ""
+        ).trim();
+
+        if (
+          Boolean(normalizedPayload.NotifyCustomer) &&
+          selectedCustomerName === "others" &&
+          !selectedCustomerEmail
+        ) {
+          throw new Error(
+            "Customer email is required when Customer Name is Others. Please enter customer email manually."
+          );
+        }
 
         const requestBody = {
           session: {
@@ -7786,6 +8084,16 @@ const ChatWindow = ({
       });
 
       if (!isSupplierDraft) {
+        // Email is sent and the request has moved to review. Hide the editable
+        // request form and its Generate Email Draft action immediately instead
+        // of waiting for a refresh.
+        setShowForm(false);
+        setFormDraft(null);
+        setFormSaveMsg("");
+        setFormInsertIndex(null);
+        setGeneratingEmailDraft(false);
+        setSavingForm(false);
+
         pushLocalCustomerRequestSuggestion({
           sessionId: res?.sessionId || workingSessionId,
           requestId: res?.requestId || formDraft?.RequestId || "",

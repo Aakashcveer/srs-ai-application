@@ -73,6 +73,13 @@ export const ENDPOINTS = {
   assessmentReportPresign: `${API_BASE_URL}/assessment/report/presign`,
   assessmentEmailGenerate: `${API_BASE_URL}/assessment/email/generate`,
 
+  // ✅ REPORT DELIVERY PUBLIC CUSTOMER FLOW
+  reportValidateToken: `${API_BASE_URL}/report/validate-token`,
+  reportSendOtp: `${API_BASE_URL}/report/send-otp`,
+  reportVerifyOtp: `${API_BASE_URL}/report/verify-otp`,
+  reportDownload: `${API_BASE_URL}/report/download`,
+  reportSubmitFeedback: `${API_BASE_URL}/report/submit-feedback`,
+
   // CONFIG
   config: `${API_BASE_URL}/config`,
 };
@@ -1870,6 +1877,92 @@ export const processCustomerReply = async (
   } finally {
     clearTimeout(timer);
   }
+};
+
+// ===============================
+// ✅ REPORT DELIVERY PUBLIC CUSTOMER FLOW
+// No Cognito token required.
+// Customer opens /report-access?token=...
+// ===============================
+const reportDeliveryPost = async (url, payload = {}) => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_STANDARD);
+
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+
+    const { text, data } = await parseJsonSafe(res);
+
+    if (!res.ok) {
+      throw new Error(
+        data?.error ||
+          data?.message ||
+          text ||
+          `Report delivery request failed (${res.status})`
+      );
+    }
+
+    return data;
+  } catch (e) {
+    if (String(e?.name).includes("AbortError")) {
+      throw new Error("REQUEST_TIMEOUT");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+export const validateReportToken = async (token) => {
+  if (!token) throw new Error("Report access token is missing");
+
+  return reportDeliveryPost(ENDPOINTS.reportValidateToken, {
+    token,
+  });
+};
+
+export const sendReportOtp = async (token) => {
+  if (!token) throw new Error("Report access token is missing");
+
+  return reportDeliveryPost(ENDPOINTS.reportSendOtp, {
+    token,
+  });
+};
+
+export const verifyReportOtp = async (token, otp) => {
+  if (!token) throw new Error("Report access token is missing");
+  if (!otp) throw new Error("OTP is required");
+
+  return reportDeliveryPost(ENDPOINTS.reportVerifyOtp, {
+    token,
+    otp,
+  });
+};
+
+export const downloadCustomerReport = async (token) => {
+  if (!token) throw new Error("Report access token is missing");
+
+  return reportDeliveryPost(ENDPOINTS.reportDownload, {
+    token,
+  });
+};
+
+export const submitReportFeedback = async (token, rating, comment = "") => {
+  if (!token) throw new Error("Report access token is missing");
+  if (!rating) throw new Error("Rating is required");
+
+  return reportDeliveryPost(ENDPOINTS.reportSubmitFeedback, {
+    token,
+    rating,
+    comment,
+  });
 };
 
 // ===============================
