@@ -37,6 +37,57 @@ import { getAccessToken } from "../../AWS/auth";
 const CUSTOMER_REQUEST_FROM_EMAIL =
   "sustainability@assureai.onmicrosoft.com";
 
+
+const REGULATION_OPTIONS = [
+  { key: "REACH", label: "REACH" },
+  { key: "ROHS", label: "ROHS" },
+  { key: "PROP_65", label: "Prop 65" },
+  { key: "CONFLICT_MINERALS", label: "Conflict Minerals" },
+];
+
+const toBooleanRegulationValue = (value) => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value === 1;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return ["true", "yes", "y", "1", "checked", "selected"].includes(normalized);
+  }
+  return false;
+};
+
+const normalizeRegulationDetail = (detail = {}) => {
+  const source = detail && typeof detail === "object" ? detail : {};
+
+  return {
+    REACH: toBooleanRegulationValue(source.REACH ?? source.reach),
+    ROHS: toBooleanRegulationValue(source.ROHS ?? source.RoHS ?? source.rohs),
+    PROP_65: toBooleanRegulationValue(
+      source.PROP_65 ??
+        source.Prop65 ??
+        source.prop65 ??
+        source.prop_65 ??
+        source["Prop 65"] ??
+        source["PROP 65"]
+    ),
+    CONFLICT_MINERALS: toBooleanRegulationValue(
+      source.CONFLICT_MINERALS ??
+        source.ConflictMinerals ??
+        source.conflictMinerals ??
+        source.conflict_minerals ??
+        source["Conflict Minerals"] ??
+        source["CONFLICT MINERALS"]
+    ),
+  };
+};
+
+const getSelectedRegulationLabels = (detail = {}) => {
+  const normalized = normalizeRegulationDetail(detail);
+  return REGULATION_OPTIONS.filter((option) => normalized[option.key]).map(
+    (option) => option.label
+  );
+};
+
+
 const makeKcWorkflowRunId = () => {
   const now = new Date();
   const pad = (value, size = 2) => String(value).padStart(size, "0");
@@ -151,12 +202,14 @@ const buildCompactCustomerEmailBody = ({
   requestPriority = "Medium",
   requestCompletionDateTime = "",
   engineeringContactEmailId = "",
+  regulationDetail = {},
 } = {}) => {
   const clean = (value) => String(value ?? "").trim();
   const safeCustomer = clean(customerName) || "Customer";
   const safeRequestType = clean(requestType) || "Customer Request";
   const safeRequestName = clean(requestName) || "Customer Request";
   const safeDescription = clean(requestDescription);
+  const selectedRegulations = getSelectedRegulationLabels(regulationDetail).join(", ");
 
   return [
     `Dear ${safeCustomer} Team,`,
@@ -173,6 +226,7 @@ const buildCompactCustomerEmailBody = ({
     `- Customer: ${safeCustomer}`,
     `- Part Description: ${clean(customerPart)}`,
     safeDescription ? `- Objective: ${safeDescription}` : "- Objective: Not provided",
+    `- Applicable Regulations: ${selectedRegulations || "Not selected"}`,
     "",
     "Timeline & Contact:",
     `- Estimated Completion: ${clean(requestCompletionDateTime) || "Not provided"}`,
@@ -4392,6 +4446,9 @@ const buildCustomerRequestFormDraft = (raw = {}) => {
   const requestorContent = requestDescription;
   const requestConfirmationEmail =
     safe.RequestConfirmationEmail ?? requestDetail.RequestConfirmationEmail ?? "";
+  const regulationDetail = normalizeRegulationDetail(
+    safe.RegulationDetail ?? safe.regulationDetail ?? requestDetail.RegulationDetail ?? requestDetail.regulationDetail ?? {}
+  );
 
   const notifyCustomer = Boolean(
     safe.NotifyCustomer ?? safe.notifyCustomer ?? false
@@ -4439,6 +4496,7 @@ const buildCustomerRequestFormDraft = (raw = {}) => {
     NotifyCustomer: notifyCustomer,
     CustomerEmail: customerEmail,
     CustomerContactEmailId: customerEmail,
+    RegulationDetail: regulationDetail,
     EmailFrom: CUSTOMER_REQUEST_FROM_EMAIL,
     RequestDetail: {
       ...(safe.RequestDetail || {}),
@@ -4450,6 +4508,7 @@ const buildCustomerRequestFormDraft = (raw = {}) => {
       RequestorMethod: requestorMethod,
       RequestorContent: requestorContent,
       RequestConfirmationEmail: requestConfirmationEmail,
+      RegulationDetail: regulationDetail,
     },
     CustomerDetail: {
       ...(safe.CustomerDetail || {}),
@@ -4573,6 +4632,32 @@ const FormEditorCard = ({
       // For "Others", the engineer must first enter the manual Customer Email.
       // The Generate Email Draft button will call onGenerateEmailDraft after validation.
       return next;
+    });
+  };
+
+  const updateRegulationField = (regulationKey, checked) => {
+    setFormDraft((prev) => {
+      if (!prev) return prev;
+
+      const nextRegulationDetail = {
+        ...normalizeRegulationDetail(
+          prev.RegulationDetail ||
+            prev.regulationDetail ||
+            prev.RequestDetail?.RegulationDetail ||
+            prev.RequestDetail?.regulationDetail ||
+            {}
+        ),
+        [regulationKey]: Boolean(checked),
+      };
+
+      return {
+        ...prev,
+        RegulationDetail: nextRegulationDetail,
+        RequestDetail: {
+          ...(prev.RequestDetail || {}),
+          RegulationDetail: nextRegulationDetail,
+        },
+      };
     });
   };
 
@@ -4701,6 +4786,17 @@ const FormEditorCard = ({
   const requestCompletionDate = String(
     getValueByKey("RequestCompletionDate") || ""
   ).trim();
+  const regulationDetail = normalizeRegulationDetail(
+    formDraft?.RegulationDetail ||
+      formDraft?.regulationDetail ||
+      formDraft?.RequestDetail?.RegulationDetail ||
+      formDraft?.RequestDetail?.regulationDetail ||
+      {}
+  );
+  const selectedRegulationLabels = getSelectedRegulationLabels(regulationDetail);
+  const selectedRegulationsText = selectedRegulationLabels.length
+    ? selectedRegulationLabels.join(", ")
+    : "";
   const selectedPriority = String(getFieldValue(priorityField) || "Medium");
   const notifyCustomer = Boolean(getValueByKey("NotifyCustomer"));
   const customerEmail = String(getValueByKey("CustomerEmail") || "").trim();
@@ -4833,6 +4929,71 @@ const FormEditorCard = ({
     );
   };
 
+  const renderRegulationSelector = () => (
+    <div className="premiumFormGroup premiumFormGroupFull">
+      <label className="premiumFormLabel">Applicable Regulations</label>
+
+      <div className="premiumFieldHelp">
+        Select all regulations that apply to this customer request.
+      </div>
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+          gap: "10px",
+          marginTop: "12px",
+        }}
+      >
+        {REGULATION_OPTIONS.map((option) => {
+          const checked = Boolean(regulationDetail[option.key]);
+
+          return (
+            <label
+              key={option.key}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "10px",
+                minHeight: "46px",
+                padding: "12px 14px",
+                borderRadius: "14px",
+                border: checked
+                  ? "1px solid rgba(79, 70, 229, 0.45)"
+                  : "1px solid rgba(148, 163, 184, 0.35)",
+                background: checked
+                  ? "linear-gradient(135deg, rgba(238,242,255,0.96), rgba(255,255,255,0.96))"
+                  : "rgba(255,255,255,0.86)",
+                boxShadow: checked
+                  ? "0 10px 26px rgba(79, 70, 229, 0.12)"
+                  : "0 8px 18px rgba(15, 23, 42, 0.04)",
+                cursor: "pointer",
+                userSelect: "none",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={checked}
+                onChange={(e) =>
+                  updateRegulationField(option.key, e.target.checked)
+                }
+              />
+              <span
+                style={{
+                  fontSize: "14px",
+                  fontWeight: 750,
+                  color: checked ? "#3730a3" : "#24324a",
+                }}
+              >
+                {option.label}
+              </span>
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
+
   return (
     <div
       className="request-form-shell"
@@ -4936,7 +5097,12 @@ const FormEditorCard = ({
             </div>
 
             <div className="premiumFormGrid">
-              {requestFields.map((f) => renderCustomerRequestField(f))}
+              {requestFields.map((f) => (
+                <React.Fragment key={f.key}>
+                  {renderCustomerRequestField(f)}
+                  {f.key === "RequestDescription" ? renderRegulationSelector() : null}
+                </React.Fragment>
+              ))}
             </div>
 
             <div className="premiumFormGroup premiumPriorityGroup">
@@ -5158,6 +5324,15 @@ const FormEditorCard = ({
               <div className="requestSummaryValue">
                 {requestType || (
                   <span className="requestSummaryMuted">Not provided</span>
+                )}
+              </div>
+            </div>
+
+            <div className="requestSummaryItem">
+              <div className="requestSummaryLabel">Applicable Regulations</div>
+              <div className="requestSummaryValue">
+                {selectedRegulationsText || (
+                  <span className="requestSummaryMuted">Not selected</span>
                 )}
               </div>
             </div>
@@ -7266,6 +7441,13 @@ const ChatWindow = ({
       CustomerEmail: baseDraft.CustomerEmail || baseDraft.CustomerContactEmailId || "",
       CustomerContactEmailId:
         baseDraft.CustomerContactEmailId || baseDraft.CustomerEmail || "",
+      RegulationDetail: normalizeRegulationDetail(
+        baseDraft.RegulationDetail ||
+          baseDraft.regulationDetail ||
+          baseDraft.RequestDetail?.RegulationDetail ||
+          baseDraft.RequestDetail?.regulationDetail ||
+          {}
+      ),
       EmailFrom: CUSTOMER_REQUEST_FROM_EMAIL,
     };
 
@@ -7353,6 +7535,12 @@ const ChatWindow = ({
     normalizedPayload.NotifyCustomer = latestNotifyCustomer;
     normalizedPayload.CustomerEmail = latestCustomerEmail;
     normalizedPayload.CustomerContactEmailId = latestCustomerEmail;
+    normalizedPayload.RegulationDetail = normalizeRegulationDetail(
+      normalizedPayload.RegulationDetail ||
+        baseDraft.RegulationDetail ||
+        baseDraft.RequestDetail?.RegulationDetail ||
+        {}
+    );
     normalizedPayload.EmailFrom = CUSTOMER_REQUEST_FROM_EMAIL;
 
     normalizedPayload.RequestorMethod =
@@ -7375,6 +7563,7 @@ const ChatWindow = ({
       RequestorMethod: normalizedPayload.RequestorMethod || "EMAIL",
       RequestorContent: normalizedPayload.RequestorContent || "",
       RequestConfirmationEmail: normalizedPayload.RequestConfirmationEmail || "",
+      RegulationDetail: normalizedPayload.RegulationDetail,
     };
 
     normalizedPayload.CustomerDetail = {
@@ -8006,6 +8195,10 @@ const ChatWindow = ({
             requestCompletionDateTime:
               formDraft?.RequestCompletionDateTime || formDraft?.RequestCompletionDate || "",
             engineeringContactEmailId: user?.email || "",
+            regulationDetail:
+              formDraft?.RegulationDetail ||
+              formDraft?.RequestDetail?.RegulationDetail ||
+              {},
           });
 
       const body = isSupplierDraft || isAssessmentReportEmail ? originalBody : compactEmailBody || originalBody;
