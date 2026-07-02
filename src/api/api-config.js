@@ -114,6 +114,56 @@ const parseJsonSafe = async (res) => {
 
 const asString = (value) => String(value ?? "").trim();
 
+const REGULATION_OPTIONS = [
+  { key: "REACH", label: "REACH" },
+  { key: "ROHS", label: "ROHS" },
+  { key: "PROP_65", label: "Prop 65" },
+  { key: "CONFLICT_MINERALS", label: "Conflict Minerals" },
+];
+
+const toBooleanRegulationValue = (value) => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value === 1;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return ["true", "yes", "y", "1", "checked", "selected"].includes(normalized);
+  }
+  return false;
+};
+
+export const normalizeRegulationDetail = (detail = {}) => {
+  const source = detail && typeof detail === "object" ? detail : {};
+
+  return {
+    REACH: toBooleanRegulationValue(source.REACH ?? source.reach),
+    ROHS: toBooleanRegulationValue(source.ROHS ?? source.RoHS ?? source.rohs),
+    PROP_65: toBooleanRegulationValue(
+      source.PROP_65 ??
+        source.Prop65 ??
+        source.prop65 ??
+        source.prop_65 ??
+        source["Prop 65"] ??
+        source["PROP 65"]
+    ),
+    CONFLICT_MINERALS: toBooleanRegulationValue(
+      source.CONFLICT_MINERALS ??
+        source.ConflictMinerals ??
+        source.conflictMinerals ??
+        source.conflict_minerals ??
+        source["Conflict Minerals"] ??
+        source["CONFLICT MINERALS"]
+    ),
+  };
+};
+
+export const getSelectedRegulationLabels = (detail = {}) => {
+  const normalized = normalizeRegulationDetail(detail);
+  return REGULATION_OPTIONS.filter((option) => normalized[option.key]).map(
+    (option) => option.label
+  );
+};
+
+
 
 const makeKcWorkflowRunId = () => {
   const now = new Date();
@@ -393,6 +443,16 @@ const normalizeCustomerRequestPayload = (payload = {}) => {
     payload.RequestConfirmationEmail || requestDetail.RequestConfirmationEmail
   );
 
+  const regulationDetail = normalizeRegulationDetail(
+    payload.RegulationDetail ||
+      payload.Regulations ||
+      payload.ApplicableRegulations ||
+      requestDetail.RegulationDetail ||
+      requestDetail.Regulations ||
+      requestDetail.ApplicableRegulations ||
+      {}
+  );
+
   const cleaned = {
     CustomerName: customerName,
     CustomerPartName: customerPartName,
@@ -408,6 +468,7 @@ const normalizeCustomerRequestPayload = (payload = {}) => {
     NotifyCustomer: Boolean(payload.NotifyCustomer),
     CustomerEmail: customerContactEmailId,
     CustomerContactEmailId: customerContactEmailId,
+    RegulationDetail: regulationDetail,
     RequestDetail: {
       RequestName: requestName,
       RequestDescription: requestDescription,
@@ -417,6 +478,7 @@ const normalizeCustomerRequestPayload = (payload = {}) => {
       RequestorMethod: requestorMethod,
       RequestorContent: requestorContent,
       RequestConfirmationEmail: requestConfirmationEmail,
+      RegulationDetail: regulationDetail,
     },
     CustomerDetail: {
       CustomerPartNumber: customerPartNumber,
@@ -445,6 +507,7 @@ export const buildRequestConfirmationEmailMarkdown = ({
   requestPriority = "",
   requestCompletionDateTime = "",
   requestorContent = "",
+  regulationDetail = {},
   engineeringContactEmailId = "",
   requestCreatedBy = "Engineering Operations Team",
 } = {}) => {
@@ -461,6 +524,7 @@ export const buildRequestConfirmationEmailMarkdown = ({
   const safeLoggedDate = asString(requestLoggedDateTime) || "Not provided";
   const safeEngineer = asString(engineeringContactEmailId) || "";
   const safeCreatedBy = asString(requestCreatedBy) || "Engineering Operations Team";
+  const selectedRegulations = getSelectedRegulationLabels(regulationDetail).join(", ") || "Not selected";
 
   return [
     `Subject: Confirmation of Request: ${safeRequestName} - ${safeCustomerPart} (Ref: ${safeRequestId})`,
@@ -480,6 +544,7 @@ export const buildRequestConfirmationEmailMarkdown = ({
     `Customer: ${safeCustomerName}`,
     `Part Description: ${safeCustomerPart}`,
     `Objective: ${safeDescription}`,
+    `Applicable Regulations: ${selectedRegulations}`,
     "",
     "Timeline & Contact",
     `Estimated Completion: ${safeCompletion}`,

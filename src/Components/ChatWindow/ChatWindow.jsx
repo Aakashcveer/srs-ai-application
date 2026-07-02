@@ -7607,11 +7607,42 @@ const ChatWindow = ({
       const res = await saveGeneratedForm(requestBody, token);
       setFormSaveMsg("✅ Saved to DynamoDB");
 
+      const savedItem = res?.item || res?.Item || res?.requestItem || {};
+      const savedRequestDetail =
+        savedItem?.RequestDetail || savedItem?.RequestDetails || {};
+      const savedCustomerDetail =
+        savedItem?.CustomerDetail || savedItem?.CustomerDetails || {};
+
       const nextSavedDraft = buildCustomerRequestFormDraft({
         ...formDraft,
         ...normalizedPayload,
+        ...savedItem,
+        RegulationDetail:
+          savedItem?.RegulationDetail ||
+          savedRequestDetail?.RegulationDetail ||
+          normalizedPayload?.RegulationDetail ||
+          formDraft?.RegulationDetail ||
+          {},
+        RequestDetail: {
+          ...(normalizedPayload?.RequestDetail || {}),
+          ...(savedRequestDetail || {}),
+          RegulationDetail:
+            savedRequestDetail?.RegulationDetail ||
+            normalizedPayload?.RegulationDetail ||
+            formDraft?.RegulationDetail ||
+            {},
+        },
+        CustomerDetail: {
+          ...(normalizedPayload?.CustomerDetail || {}),
+          ...(savedCustomerDetail || {}),
+        },
+        CustomerDetails: {
+          ...(normalizedPayload?.CustomerDetails || normalizedPayload?.CustomerDetail || {}),
+          ...(savedCustomerDetail || {}),
+        },
         RequestId:
           extractRequestIdFromSessionId(workingSessionId) ||
+          savedItem?.RequestId ||
           formDraft?.RequestId ||
           res?.requestId ||
           res?.RequestId ||
@@ -7681,11 +7712,44 @@ const ChatWindow = ({
 
         const saveRes = await saveGeneratedForm(requestBody, token);
 
+        const savedItem = saveRes?.item || saveRes?.Item || saveRes?.requestItem || {};
+        const savedRequestDetail =
+          savedItem?.RequestDetail || savedItem?.RequestDetails || {};
+        const savedCustomerDetail =
+          savedItem?.CustomerDetail || savedItem?.CustomerDetails || {};
+
         const nextSavedDraft = buildCustomerRequestFormDraft({
           ...(draftOverride || formDraft || {}),
           ...normalizedPayload,
+          ...savedItem,
+          RegulationDetail:
+            savedItem?.RegulationDetail ||
+            savedRequestDetail?.RegulationDetail ||
+            normalizedPayload?.RegulationDetail ||
+            draftOverride?.RegulationDetail ||
+            formDraft?.RegulationDetail ||
+            {},
+          RequestDetail: {
+            ...(normalizedPayload?.RequestDetail || {}),
+            ...(savedRequestDetail || {}),
+            RegulationDetail:
+              savedRequestDetail?.RegulationDetail ||
+              normalizedPayload?.RegulationDetail ||
+              draftOverride?.RegulationDetail ||
+              formDraft?.RegulationDetail ||
+              {},
+          },
+          CustomerDetail: {
+            ...(normalizedPayload?.CustomerDetail || {}),
+            ...(savedCustomerDetail || {}),
+          },
+          CustomerDetails: {
+            ...(normalizedPayload?.CustomerDetails || normalizedPayload?.CustomerDetail || {}),
+            ...(savedCustomerDetail || {}),
+          },
           RequestId:
             extractRequestIdFromSessionId(workingSessionId) ||
+            savedItem?.RequestId ||
             draftOverride?.RequestId ||
             formDraft?.RequestId ||
             saveRes?.requestId ||
@@ -7758,17 +7822,41 @@ const ChatWindow = ({
           nextSavedDraft
         );
 
+        const resolvedDraftToEmail = normalizeCustomerEmailValue(
+          draftRes?.toEmail || lockedEmailDraft?.to || lockedArtifact?.to || ""
+        );
+
+        if (resolvedDraftToEmail) {
+          setFormDraft((prev) => {
+            const base = prev || nextSavedDraft || {};
+            const updatedDraft = buildCustomerRequestFormDraft({
+              ...base,
+              CustomerEmail: resolvedDraftToEmail,
+              CustomerContactEmailId: resolvedDraftToEmail,
+              CustomerContactEmail: resolvedDraftToEmail,
+              CustomerDetail: {
+                ...(base?.CustomerDetail || {}),
+                CustomerContactEmailId: resolvedDraftToEmail,
+                CustomerContactEmail: resolvedDraftToEmail,
+              },
+              CustomerDetails: {
+                ...(base?.CustomerDetails || base?.CustomerDetail || {}),
+                CustomerContactEmailId: resolvedDraftToEmail,
+                CustomerContactEmail: resolvedDraftToEmail,
+              },
+            });
+            onFormStateChange?.(activeSessionId, updatedDraft);
+            return updatedDraft;
+          });
+        }
+
         addMessage({
           sender: "bot",
           role: "assistant",
           text: lockedReplyText || "Email draft generated successfully.",
           artifact: lockedArtifact,
           emailDraft: lockedEmailDraft,
-          toEmail:
-            draftRes?.toEmail ||
-            lockedEmailDraft?.to ||
-            lockedArtifact?.to ||
-            "",
+          toEmail: resolvedDraftToEmail,
         });
 
         setFormSaveMsg("✅ Email draft generated");
