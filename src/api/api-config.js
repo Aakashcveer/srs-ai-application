@@ -18,7 +18,7 @@ export const API_BASE_URL = (
 // All assessment triggers now go through /fmd-assessment on the main chat API.
 
 console.log("✅ LOADED api-config.js FROM:", import.meta.url, "TIME:", Date.now());
-console.log("✅ api-config UPDATED VERSION 1029 - KC FMD FULL PAYLOAD");
+console.log("✅ api-config UPDATED VERSION 1030 - UX EMAIL FLOW FIXES");
 console.log("✅ CHAT API BASE URL:", API_BASE_URL);
 console.log("✅ FMD CORE ENGINE URL:", `${API_BASE_URL}/fmd-assessment`);
 

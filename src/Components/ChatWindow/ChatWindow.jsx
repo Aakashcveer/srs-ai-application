@@ -7,7 +7,7 @@ import React, {
   useCallback,
 } from "react";
 import { createPortal } from "react-dom";
-import { FolderOpen, PlusCircle, ChevronDown } from "lucide-react";
+import { FolderOpen, PlusCircle, ChevronDown, Pencil } from "lucide-react";
 import "./ChatWindow.css";
 import { UploadIcon, SendIcon } from "./InputIcons";
 import MarkdownRenderer from "./MarkdownRenderer";
@@ -20,6 +20,7 @@ import {
   saveGeneratedForm,
   searchCustomerRequests,
   sendCustomerEmail,
+  saveEmailDraft,
   processCustomerReply,
   triggerFmdAssessment,
   buildRequestConfirmationEmailMarkdown,
@@ -208,32 +209,37 @@ const buildCompactCustomerEmailBody = ({
   const safeCustomer = clean(customerName) || "Customer";
   const safeRequestType = clean(requestType) || "Customer Request";
   const safeRequestName = clean(requestName) || "Customer Request";
-  const safeDescription = clean(requestDescription);
-  const selectedRegulations = getSelectedRegulationLabels(regulationDetail).join(", ");
+  const safeDescription = clean(requestDescription) || "Not provided";
+  const selectedRegulations =
+    getSelectedRegulationLabels(regulationDetail).join(", ") || "Not selected";
 
+  // Keep one business detail per line. This is intentionally plain text so
+  // Gmail/Outlook and the in-app preview remain readable and consistent.
   return [
     `Dear ${safeCustomer} Team,`,
     "",
-    `This email confirms that we have received and logged your request for ${safeRequestType}.`,
+    `This email confirms that we have successfully received and logged your request for ${safeRequestType}.`,
     "",
-    "Request Information:",
-    `- Request ID: ${clean(requestId)}`,
-    `- Request Name: ${safeRequestName}`,
-    `- Current Status: REQUEST-REVIEW`,
-    `- Priority: ${clean(requestPriority) || "Medium"}`,
+    "Our engineering team has updated the status of this ticket, and it is currently being prioritized according to the details below.",
     "",
-    "Part & Project Details:",
-    `- Customer: ${safeCustomer}`,
-    `- Part Description: ${clean(customerPart)}`,
-    safeDescription ? `- Objective: ${safeDescription}` : "- Objective: Not provided",
-    `- Applicable Regulations: ${selectedRegulations || "Not selected"}`,
+    "Submission Overview",
+    `Request Reference: ${clean(requestId) || "Not provided"}`,
+    `Part Name/No: ${clean(customerPart) || "Not provided"}`,
+    `Service Type: ${safeRequestType}`,
+    "Current Status: REQUEST-REVIEW",
+    `Priority Level: ${clean(requestPriority) || "Medium"}`,
     "",
-    "Timeline & Contact:",
-    `- Estimated Completion: ${clean(requestCompletionDateTime) || "Not provided"}`,
-    `- Engineering Lead: ${clean(engineeringContactEmailId)}`,
+    "Details & Scope",
+    `Scope: ${safeDescription}`,
+    `Specific Instructions: ${safeDescription}`,
+    `Applicable Regulations: ${selectedRegulations}`,
     "",
-    "Next Steps:",
-    "Our team is currently in the REQUEST-REVIEW phase. We will reach out if any further clarification or documentation is required.",
+    "Timeline & Contact",
+    `Estimated Completion: ${clean(requestCompletionDateTime) || "Not provided"}`,
+    `Engineering Lead: ${clean(engineeringContactEmailId) || "Not provided"}`,
+    "",
+    "Next Steps",
+    "Our team is currently reviewing the request. We will contact you if further clarification or technical documentation is required.",
     "",
     "Best regards,",
     "Engineering Operations Team",
@@ -3813,6 +3819,9 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail, onPreviewAttachment, 
   const [isEditing, setIsEditing] = useState(false);
   const [localDraft, setLocalDraft] = useState(draft || defaultDraft);
   const [statusMsg, setStatusMsg] = useState("");
+  const [savingDraft, setSavingDraft] = useState(false);
+  const [sendingEmail, setSendingEmail] = useState(false);
+  const [sentSuccessfully, setSentSuccessfully] = useState(false);
 
   useEffect(() => {
     const nextIsSupplier =
@@ -3827,6 +3836,9 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail, onPreviewAttachment, 
     );
     setStatusMsg("");
     setIsEditing(false);
+    setSavingDraft(false);
+    setSendingEmail(false);
+    setSentSuccessfully(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft]);
 
@@ -3837,27 +3849,54 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail, onPreviewAttachment, 
     setLocalDraft((prev) => ({ ...prev, [key]: value }));
   };
 
-  const handleSave = () => {
-    onSaveDraft?.({
-      ...localDraft,
-      from: localDraft?.from || CUSTOMER_REQUEST_FROM_EMAIL,
-      isSupplierEmail: isSupplier,
-      kind: isSupplier ? "supplier_fmd_request" : localDraft?.kind || "customer_request_email",
-      emailKind: isSupplier ? "supplier_fmd_request" : localDraft?.emailKind || "customer_request_email",
-    });
-    setStatusMsg("Draft saved locally.");
-    setIsEditing(false);
+  const buildCurrentDraft = () => ({
+    ...localDraft,
+    from: localDraft?.from || CUSTOMER_REQUEST_FROM_EMAIL,
+    isSupplierEmail: isSupplier,
+    kind: isSupplier
+      ? "supplier_fmd_request"
+      : localDraft?.kind || "customer_request_email",
+    emailKind: isSupplier
+      ? "supplier_fmd_request"
+      : localDraft?.emailKind || "customer_request_email",
+  });
+
+  const handleSave = async () => {
+    if (savingDraft || sendingEmail || sentSuccessfully) return;
+
+    try {
+      setSavingDraft(true);
+      setStatusMsg("");
+      await onSaveDraft?.(buildCurrentDraft());
+      setStatusMsg("✅ Draft saved successfully.");
+      setIsEditing(false);
+    } catch (error) {
+      console.error("Save draft failed:", error);
+      setStatusMsg(`❌ ${error?.message || "Unable to save draft."}`);
+    } finally {
+      setSavingDraft(false);
+    }
   };
 
-  const handleSend = () => {
-    onSendEmail?.({
-      ...localDraft,
-      from: localDraft?.from || CUSTOMER_REQUEST_FROM_EMAIL,
-      isSupplierEmail: isSupplier,
-      kind: isSupplier ? "supplier_fmd_request" : localDraft?.kind || "customer_request_email",
-      emailKind: isSupplier ? "supplier_fmd_request" : localDraft?.emailKind || "customer_request_email",
-    });
-    setStatusMsg(isSupplier ? "" : "Send action triggered.");
+  const handleSend = async () => {
+    if (sendingEmail || savingDraft || sentSuccessfully) return;
+
+    try {
+      setSendingEmail(true);
+      setStatusMsg("");
+      await onSendEmail?.(buildCurrentDraft());
+      setSentSuccessfully(true);
+      setStatusMsg(
+        isSupplier
+          ? "✅ Supplier email sent successfully."
+          : "✅ Email sent. Waiting for customer response."
+      );
+    } catch (error) {
+      console.error("Send email failed:", error);
+      setStatusMsg(`❌ ${error?.message || "Unable to send email."}`);
+    } finally {
+      setSendingEmail(false);
+    }
   };
 
   const accent = isSupplier
@@ -3919,8 +3958,14 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail, onPreviewAttachment, 
           <span
             style={{
               alignSelf: "center",
-              borderRadius: "999px",
-              padding: "8px 12px",
+              width: "148px",
+              height: "44px",
+              boxSizing: "border-box",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              borderRadius: "14px",
+              padding: "0 16px",
               fontSize: "11px",
               fontWeight: 800,
               letterSpacing: "0.08em",
@@ -3929,6 +3974,7 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail, onPreviewAttachment, 
               background: isSupplier ? "rgba(240, 253, 250, 0.96)" : "rgba(238, 242, 255, 0.96)",
               border: isSupplier ? "1px solid rgba(20, 184, 166, 0.25)" : "1px solid rgba(99, 102, 241, 0.2)",
               whiteSpace: "nowrap",
+              flexShrink: 0,
             }}
           >
             {isSupplier ? "Supplier Request" : "Customer Review"}
@@ -3936,10 +3982,25 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail, onPreviewAttachment, 
 
           <button
             type="button"
-            className="premiumGhostBtn"
+            className="premiumGhostBtn emailDraftEditBtn"
             onClick={() => setIsEditing((prev) => !prev)}
+            disabled={savingDraft || sendingEmail || sentSuccessfully}
+            title="Review and edit the email before sending"
+            style={{
+              width: "148px",
+              height: "44px",
+              boxSizing: "border-box",
+              flexShrink: 0,
+            }}
           >
-            {isEditing ? "Preview" : "Edit"}
+            {isEditing ? (
+              "Preview Email"
+            ) : (
+              <>
+                <Pencil size={16} strokeWidth={2.2} aria-hidden="true" />
+                <span>Edit Email</span>
+              </>
+            )}
           </button>
         </div>
       </div>
@@ -4069,7 +4130,7 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail, onPreviewAttachment, 
             ? "Edit the draft and save your changes before sending."
             : isSupplier
             ? "Preview the supplier-facing FMD request email before sending."
-            : "Preview the customer-facing email draft."}
+            : "Review the draft. Use “Edit Email” to change recipient, subject, or message before sending."}
         </div>
 
         <div className="emailDraftFooterActions">
@@ -4077,16 +4138,24 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail, onPreviewAttachment, 
             type="button"
             className="premiumGhostBtn"
             onClick={handleSave}
+            disabled={savingDraft || sendingEmail || sentSuccessfully}
           >
-            Save Draft
+            {savingDraft ? "Saving..." : sentSuccessfully ? "Sent" : "Save Draft"}
           </button>
 
           <button
             type="button"
             className="formSaveBtn premiumFormSaveBtn"
             onClick={handleSend}
+            disabled={sendingEmail || savingDraft || sentSuccessfully}
           >
-            {isSupplier ? "Send to Supplier" : "Send Email"}
+            {sentSuccessfully
+              ? "Email Sent"
+              : sendingEmail
+              ? "Sending..."
+              : isSupplier
+              ? "Send to Supplier"
+              : "Send Email"}
           </button>
         </div>
       </div>
@@ -5992,6 +6061,10 @@ const ChatWindow = ({
   const visibleMessageCountRef = useRef(0);
   const customerRequestSearchSeqRef = useRef(0);
   const supplierTaskAutoLoadedRef = useRef(new Set());
+
+  // Prevent duplicate email submissions caused by repeated clicks or slow network.
+  const emailSendInFlightRef = useRef(new Set());
+  const emailSentKeysRef = useRef(new Set());
 
   const getActiveSessionId = useCallback(() => {
     // Prefer React prop over ref. The ref can lag behind immediately after
@@ -8040,10 +8113,46 @@ const ChatWindow = ({
     await continueFlowWithValue(value);
   };
 
-  const handleSaveEmailDraft = (draft) => {
+  const handleSaveEmailDraft = async (draft) => {
+    const workingSessionId = getActiveSessionId();
+    const isSupplierDraft =
+      Boolean(draft?.isSupplierEmail) || isSupplierEmailDraft(draft);
+
+    const lockedDraft = isSupplierDraft
+      ? draft
+      : lockEmailDraftToSession(draft, workingSessionId, formDraft);
+
+    const to = String(lockedDraft?.to || "").trim();
+    const subject = String(lockedDraft?.subject || "").trim();
+    const body = String(lockedDraft?.body || "").trim();
+    const requestId =
+      lockedDraft?.requestId ||
+      lockedDraft?.RequestId ||
+      extractRequestIdFromSessionId(workingSessionId) ||
+      formDraft?.RequestId ||
+      "";
+
+    if (!subject && !body) {
+      throw new Error("Email subject or body is required before saving.");
+    }
+
+    const token = await getAccessToken();
+
+    // Persist through /email/draft so Save Draft survives refresh.
+    await saveEmailDraft(
+      {
+        sessionId: workingSessionId,
+        userId: user?.email,
+        to,
+        subject,
+        body,
+        requestId,
+      },
+      token
+    );
+
     updateMessages((prev) =>
       prev.map((m, idx) => {
-        const sender = m.sender || (m.role === "assistant" ? "bot" : "user");
         const text =
           m.text ??
           (typeof m.content === "string"
@@ -8062,22 +8171,29 @@ const ChatWindow = ({
           return {
             ...m,
             emailDraft: {
-              ...draft,
-              to: draft?.to || existingDraft?.to || getPreferredCustomerEmail(m),
-              from: draft?.from || existingDraft?.from || CUSTOMER_REQUEST_FROM_EMAIL,
+              ...existingDraft,
+              ...lockedDraft,
+              to: to || existingDraft?.to || getPreferredCustomerEmail(m),
+              from:
+                lockedDraft?.from ||
+                existingDraft?.from ||
+                CUSTOMER_REQUEST_FROM_EMAIL,
+              subject,
+              body,
+              requestId,
               isSupplierEmail:
-                Boolean(draft?.isSupplierEmail) ||
+                Boolean(lockedDraft?.isSupplierEmail) ||
                 Boolean(existingDraft?.isSupplierEmail),
               kind:
-                draft?.kind ||
+                lockedDraft?.kind ||
                 existingDraft?.kind ||
-                (draft?.isSupplierEmail || existingDraft?.isSupplierEmail
+                (isSupplierDraft
                   ? "supplier_fmd_request"
                   : "customer_request_email"),
               emailKind:
-                draft?.emailKind ||
+                lockedDraft?.emailKind ||
                 existingDraft?.emailKind ||
-                (draft?.isSupplierEmail || existingDraft?.isSupplierEmail
+                (isSupplierDraft
                   ? "supplier_fmd_request"
                   : "customer_request_email"),
             },
@@ -8086,6 +8202,8 @@ const ChatWindow = ({
         return m;
       })
     );
+
+    return { saved: true };
   };
 
   const handleSupplierTaskUpdated = useCallback(
@@ -8264,6 +8382,24 @@ const ChatWindow = ({
       const requestId =
         extractRequestIdFromSessionId(workingSessionId) || formDraft?.RequestId || "";
 
+      const sendKey = [
+        workingSessionId,
+        requestId,
+        String(to).toLowerCase(),
+        String(lockedDraft?.subject || "").trim(),
+        isSupplierDraft ? "supplier" : "customer",
+      ].join("|");
+
+      if (emailSendInFlightRef.current.has(sendKey)) {
+        throw new Error("Email is already being sent. Please wait.");
+      }
+
+      if (emailSentKeysRef.current.has(sendKey)) {
+        throw new Error("This email has already been sent.");
+      }
+
+      emailSendInFlightRef.current.add(sendKey);
+
       const customerPart = `${formDraft?.CustomerPartNumber || extractPartNumberFromSessionId(workingSessionId) || ""}#${formDraft?.CustomerPartName || extractPartNameFromSessionId(workingSessionId) || ""}`.replace(/^#|#$/g, "");
 
       const isAssessmentReportEmail =
@@ -8344,6 +8480,8 @@ const ChatWindow = ({
         token
       );
 
+      emailSentKeysRef.current.add(sendKey);
+
       const emailStatus = isSupplierDraft
         ? normalizeWorkflowStatus("ASSESSMENT-INPROGRESS")
         : getWorkflowStatusFromApiResponse(res) || normalizeWorkflowStatus("REQUEST-REVIEW");
@@ -8359,7 +8497,9 @@ const ChatWindow = ({
           res?.reply ||
           (isSupplierDraft
             ? `✅ Supplier email sent successfully to ${to}.`
-            : `✅ Email sent successfully to ${to}. Status moved to REQUEST-REVIEW.`),
+            : `✅ Email sent successfully to ${to}.
+
+Next step: Waiting for the customer response. Once the reply is received, review it in ASSURE-AI and then proceed to Assessment.`),
         RequestStatus: emailStatus,
         requestStatus: emailStatus,
       });
@@ -8395,6 +8535,24 @@ const ChatWindow = ({
         role: "assistant",
         text: `❌ ${e?.message || "Failed to send email"}`,
       });
+      throw e;
+    } finally {
+      const workingSessionId = getActiveSessionId();
+      const isSupplierDraft =
+        Boolean(draft?.isSupplierEmail) || isSupplierEmailDraft(draft);
+      const lockedDraft = isSupplierDraft
+        ? draft
+        : lockEmailDraftToSession(draft, workingSessionId, formDraft);
+      const requestId =
+        extractRequestIdFromSessionId(workingSessionId) || formDraft?.RequestId || "";
+      const sendKey = [
+        workingSessionId,
+        requestId,
+        String(lockedDraft?.to || "").trim().toLowerCase(),
+        String(lockedDraft?.subject || "").trim(),
+        isSupplierDraft ? "supplier" : "customer",
+      ].join("|");
+      emailSendInFlightRef.current.delete(sendKey);
     }
   };
 

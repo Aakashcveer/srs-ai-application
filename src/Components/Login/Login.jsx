@@ -420,8 +420,10 @@ const Login = ({ onAuthenticate }) => {
                 {otp.map((digit, i) => (
                   <input
                     key={i}
-                    type="text"
+                    type="password"
                     inputMode="numeric"
+                    autoComplete="one-time-code"
+                    aria-label={`OTP digit ${i + 1}`}
                     className="otp-box"
                     maxLength={1}
                     value={digit}
