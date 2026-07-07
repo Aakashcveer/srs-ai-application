@@ -1517,8 +1517,6 @@ const EmailReviewActionCard = ({
     replyInfo?.requestId || requestId || "Current customer request";
   const displayAssignedTo =
     replyInfo?.assignedTo || assignedTo || "Assigned engineer";
-  const displayAskType = replyInfo?.askType || "EMAIL REVIEW";
-  const displayStatus = replyInfo?.status || "EMAIL-REVIEW";
 
   const styles = {
     shell: {
@@ -1677,8 +1675,6 @@ const EmailReviewActionCard = ({
 
         <div style={styles.badgeWrap}>
           <span style={styles.dangerBadge}>Pending engineer action</span>
-          <span style={styles.badge}>Ask Type: {displayAskType}</span>
-          <span style={styles.badge}>Status: {displayStatus}</span>
         </div>
       </div>
 
@@ -5009,9 +5005,10 @@ const FormEditorCard = ({
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
-          gap: "10px",
-          marginTop: "12px",
+    gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+    gap: "10px",
+    marginTop: "12px",
+    width: "100%",
         }}
       >
         {REGULATION_OPTIONS.map((option) => {
