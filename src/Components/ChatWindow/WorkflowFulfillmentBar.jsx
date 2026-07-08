@@ -13,6 +13,11 @@ const WORKFLOW_STEPS = [
     description: "Request is under review / email sent.",
   },
   {
+    key: "EMAIL-REVIEW",
+    label: "Email Review",
+    description: "Customer reply is waiting for engineering review.",
+  },
+  {
     key: "REQUEST-CONFIRMED",
     label: "Request Confirmed",
     description: "Customer confirmed the request.",
@@ -20,7 +25,7 @@ const WORKFLOW_STEPS = [
   {
     key: "ASSESSMENT-TRIGGERED",
     label: "Assessment Triggered",
-    description: "Assessment workflow has started.",
+    description: "Assessment workflow has been triggered.",
   },
   {
     key: "ASSESSMENT-INPROGRESS",
@@ -61,9 +66,8 @@ const normalizeStatus = (status = "") => {
     .replace(/_/g, "-")
     .replace(/\s+/g, "-");
 
+  // Same state, alternate spelling only. No business-state remapping.
   if (value === "ASSESSMENT-IN-PROGRESS") return "ASSESSMENT-INPROGRESS";
-  if (value === "REQUEST-CREATED") return "REQUEST-CREATE";
-  if (value === "REQUEST-SUBMITTED") return "RESULTS-SUBMITTED";
 
   return value;
 };
@@ -137,6 +141,7 @@ const WorkflowFulfillmentBar = ({
   workflowSections = {},
   onStepClick,
 }) => {
+  // requestStatus is expected to come directly from backend request metadata.
   const currentStatus = normalizeStatus(requestStatus);
 
   const currentIndex = useMemo(() => {
@@ -184,69 +189,8 @@ const WorkflowFulfillmentBar = ({
       return;
     }
 
-    if (step.key === "REQUEST-REVIEW") {
-      const reviewTarget =
-        document.querySelector("[data-workflow-status='REQUEST-REVIEW']") ||
-        document.querySelector("#workflow-REQUEST-REVIEW") ||
-        document.querySelector(".emailDraftShell") ||
-        document.querySelector(".emailDraftPreview");
-
-      if (reviewTarget) {
-        scrollToElement(reviewTarget);
-      }
-
-      return;
-    }
-
-    if (step.key === "REQUEST-CONFIRMED") {
-      const confirmedTarget =
-        document.querySelector("[data-workflow-status='REQUEST-CONFIRMED']") ||
-        document.querySelector("#workflow-REQUEST-CONFIRMED") ||
-        document.querySelector(".emailReviewActionCard") ||
-        document.querySelector(".emailDraftShell");
-
-      if (confirmedTarget) {
-        scrollToElement(confirmedTarget);
-      }
-
-      return;
-    }
-
-    if (
-      step.key === "ASSESSMENT-TRIGGERED" ||
-      step.key === "ASSESSMENT-INPROGRESS" ||
-      step.key === "ASSESSMENT-COMPLETED"
-    ) {
-      const assessmentTarget =
-        document.querySelector(`[data-workflow-status="${step.key}"]`) ||
-        document.querySelector(`#workflow-${step.key}`);
-
-      if (assessmentTarget) {
-        scrollToElement(assessmentTarget);
-      }
-
-      return;
-    }
-
-    if (
-      step.key === "RESULTS-REVIEW" ||
-      step.key === "RESULTS-APPROVED" ||
-      step.key === "RESULTS-SUBMITTED" ||
-      step.key === "REQUEST-CLOSED"
-    ) {
-      const resultTarget =
-        document.querySelector(`[data-workflow-status="${step.key}"]`) ||
-        document.querySelector(`#workflow-${step.key}`);
-
-      if (resultTarget) {
-        scrollToElement(resultTarget);
-      }
-
-      return;
-    }
-
-    // No random fallback here.
-    // If the exact section is not present yet, keep the user where they are.
+    // No guessed fallback target. If the exact workflow section is not
+    // present in the chat yet, keep the user where they are.
   };
 
   return (

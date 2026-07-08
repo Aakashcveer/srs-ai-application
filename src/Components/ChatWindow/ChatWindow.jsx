@@ -388,6 +388,7 @@ const formatMessageDateSeparator = (value = "") => {
 const WORKFLOW_STATUS_ORDER = [
   "REQUEST-CREATE",
   "REQUEST-REVIEW",
+  "EMAIL-REVIEW",
   "REQUEST-CONFIRMED",
   "ASSESSMENT-TRIGGERED",
   "ASSESSMENT-INPROGRESS",
@@ -425,10 +426,9 @@ const normalizeWorkflowStatus = (status = "") => {
     .replace(/_/g, "-")
     .replace(/\s+/g, "-");
 
+  // Formatting-only compatibility for the same backend state spelling.
+  // Do not map one business state to another.
   if (value === "ASSESSMENT-IN-PROGRESS") return "ASSESSMENT-INPROGRESS";
-  if (value === "REQUEST-CREATED") return "REQUEST-CREATE";
-  if (value === "REQUEST-REVIEWED") return "REQUEST-REVIEW";
-  if (value === "REQUEST-SUBMITTED") return "RESULTS-SUBMITTED";
 
   return WORKFLOW_STATUS_ORDER.includes(value) ? value : "";
 };
@@ -6924,94 +6924,27 @@ const ChatWindow = ({
   }, [normalizedMessages]);
 
   const currentRequestStatus = useMemo(() => {
-    const backendStatus = normalizeWorkflowStatus(currentRequestStatusOverride);
-    const formStatus = normalizeWorkflowStatus(
-      formDraft?.RequestStatus || formDraft?.requestStatus || ""
+    // Strict backend source of truth.
+    // Chat.jsx passes the exact active request row status returned by /initialise.
+    // No form-state fallback, message-text parsing, supplier heuristics, or
+    // frontend lifecycle remapping is allowed for the progress timeline.
+    return normalizeWorkflowStatus(
+      chat?.requestStatus ||
+        chat?.RequestStatus ||
+        chat?.requestMeta?.requestStatus ||
+        chat?.requestMeta?.RequestStatus ||
+        chat?.requestMeta?.rawRequestStatus ||
+        chat?.requestMeta?.status ||
+        ""
     );
-    const messageStatus = extractCurrentRequestStatusFromMessages(normalizedMessages);
-    const hasSupplierPending = hasSupplierPendingAssessmentSignal(normalizedMessages);
-
-    // Final state must always win.
-    // Older assessment messages/cards can still remain in chat history after closure,
-    // so if any latest message confirms REQUEST-CLOSED, do not allow the supplier
-    // pending rule to push the timeline back to ASSESSMENT-INPROGRESS.
-    const hasRequestClosedSignal = (Array.isArray(normalizedMessages) ? normalizedMessages : []).some((m) => {
-      const artifact = m?.artifact || {};
-      const artifactStatus = normalizeWorkflowStatus(
-        artifact?.RequestStatus ||
-          artifact?.requestStatus ||
-          m?.RequestStatus ||
-          m?.requestStatus ||
-          ""
-      );
-      const text = [
-        extractMessageText(m),
-        m?.text,
-        typeof m?.content === "string" ? m.content : "",
-        artifact ? safeJsonStringify(artifact) : "",
-      ]
-        .filter(Boolean)
-        .join("\n")
-        .toLowerCase();
-
-      return (
-        artifactStatus === "REQUEST-CLOSED" ||
-        text.includes("request-closed") ||
-        text.includes("status moved to request-closed") ||
-        text.includes("no further action required") ||
-        text.includes("customer acknowledged the final assessment report")
-      );
-    });
-
-    if (backendStatus === "REQUEST-CLOSED" || messageStatus === "REQUEST-CLOSED" || hasRequestClosedSignal) {
-      return "REQUEST-CLOSED";
-    }
-
-    // Results-submitted should also win over older supplier/assessment pending signals.
-    // Otherwise the right-side progress bar can jump backward after final email send.
-    const hasResultsSubmittedSignal = (Array.isArray(normalizedMessages) ? normalizedMessages : []).some((m) => {
-      const text = [
-        extractMessageText(m),
-        m?.text,
-        typeof m?.content === "string" ? m.content : "",
-        m?.artifact ? safeJsonStringify(m.artifact) : "",
-      ]
-        .filter(Boolean)
-        .join("\n")
-        .toLowerCase();
-
-      return (
-        text.includes("results-submitted") ||
-        text.includes("status moved to results-submitted") ||
-        text.includes("with attached assessment pdf") ||
-        text.includes("assessment pdf")
-      );
-    });
-
-    if (backendStatus === "RESULTS-SUBMITTED" || messageStatus === "RESULTS-SUBMITTED" || hasResultsSubmittedSignal) {
-      return "RESULTS-SUBMITTED";
-    }
-
-    // KC/FMD rule:
-    // If supplier FMD task/email is created, assessment is still in progress.
-    // Do not let an older REQUEST-CONFIRMED form/sidebar value keep the
-    // fulfillment bar behind the actual workflow.
-    if (
-      hasSupplierPending &&
-      (!backendStatus ||
-        backendStatus === "REQUEST-CONFIRMED" ||
-        backendStatus === "ASSESSMENT-TRIGGERED" ||
-        backendStatus === "ASSESSMENT-COMPLETED")
-    ) {
-      return "ASSESSMENT-INPROGRESS";
-    }
-
-    // Priority:
-    // 1) real status refreshed from backend/DynamoDB
-    // 2) current form state
-    // 3) fallback from chat messages
-    return backendStatus || formStatus || messageStatus;
-  }, [currentRequestStatusOverride, formDraft, normalizedMessages]);
+  }, [
+    chat?.requestStatus,
+    chat?.RequestStatus,
+    chat?.requestMeta?.requestStatus,
+    chat?.requestMeta?.RequestStatus,
+    chat?.requestMeta?.rawRequestStatus,
+    chat?.requestMeta?.status,
+  ]);
 
   const shouldShowWorkflowFulfillmentBar = useMemo(() => {
     // Supplier task screen is not the customer request lifecycle screen.

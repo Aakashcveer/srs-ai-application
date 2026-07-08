@@ -1429,6 +1429,38 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
     activeSessionId && formDirtyMap[activeSessionId]
   );
 
+  // Backend is the single source of truth for the Request Progress Timeline.
+  // Match only the active request row returned by /initialise; do not derive
+  // lifecycle status from form state, chat text, or local optimistic messages.
+  const activeBackendRequestMeta = (() => {
+    const activeId = String(activeSessionId || "").trim().toLowerCase();
+    if (!activeId) return null;
+
+    const backendRows = [
+      ...(sessions?.groupedSessions?.customerRequest || []),
+      ...(sessions?.requests || []),
+    ];
+
+    return (
+      backendRows.find(
+        (item) =>
+          String(item?.sessionId || item?.SessionId || "")
+            .trim()
+            .toLowerCase() === activeId
+      ) || null
+    );
+  })();
+
+  const activeBackendRequestStatus = String(
+    activeBackendRequestMeta?.requestStatus ||
+      activeBackendRequestMeta?.RequestStatus ||
+      activeBackendRequestMeta?.rawRequestStatus ||
+      activeBackendRequestMeta?.RawRequestStatus ||
+      activeBackendRequestMeta?.status ||
+      activeBackendRequestMeta?.Status ||
+      ""
+  ).trim();
+
   const customerRequestHelperSessionId = getCustomerRequestHelperSessionId();
 
   const isCustomerRequestStarterSession =
@@ -1549,7 +1581,12 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
       )}
 
       <ChatWindow
-        chat={{ id: activeSessionId, messages }}
+        chat={{
+          id: activeSessionId,
+          messages,
+          requestStatus: activeBackendRequestStatus,
+          requestMeta: activeBackendRequestMeta,
+        }}
         updateMessages={(updater) => updateMessages(activeSessionId, updater)}
         user={user}
         onFirstMessage={handleAutoRename}
