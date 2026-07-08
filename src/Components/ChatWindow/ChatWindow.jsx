@@ -251,6 +251,137 @@ const buildCompactCustomerEmailBody = ({
 
 
 /* ===============================
+   ✅ Message timestamp helpers
+   =============================== */
+
+const getMessageTimestamp = (message = {}) => {
+  const artifact = message?.artifact || message?.Artifact || {};
+  const assessment =
+    artifact?.assessment ||
+    artifact?.Assessment ||
+    message?.assessment ||
+    message?.Assessment ||
+    {};
+  const supplierTask =
+    message?.supplierTask ||
+    message?.SupplierTask ||
+    artifact?.supplierTask ||
+    artifact?.SupplierTask ||
+    {};
+  const taskItem =
+    supplierTask?.taskItem ||
+    supplierTask?.TaskItem ||
+    artifact?.taskItem ||
+    artifact?.TaskItem ||
+    {};
+  const emailDraft =
+    message?.emailDraft ||
+    message?.EmailDraft ||
+    artifact?.emailDraft ||
+    artifact?.EmailDraft ||
+    {};
+
+  return (
+    message?.timestamp ||
+    message?.Timestamp ||
+    message?.createdAt ||
+    message?.CreatedAt ||
+    message?.messageTimestamp ||
+    message?.MessageTimestamp ||
+    message?.sentAt ||
+    message?.SentAt ||
+    artifact?.timestamp ||
+    artifact?.Timestamp ||
+    artifact?.createdAt ||
+    artifact?.CreatedAt ||
+    artifact?.generatedAt ||
+    artifact?.GeneratedAt ||
+    artifact?.assessmentReportCreatedOn ||
+    artifact?.AssessmentReportCreatedOn ||
+    artifact?.reportCreatedOn ||
+    artifact?.ReportCreatedOn ||
+    assessment?.timestamp ||
+    assessment?.Timestamp ||
+    assessment?.generatedAt ||
+    assessment?.GeneratedAt ||
+    assessment?.assessmentReportCreatedOn ||
+    assessment?.AssessmentReportCreatedOn ||
+    assessment?.reportCreatedOn ||
+    assessment?.ReportCreatedOn ||
+    supplierTask?.timestamp ||
+    supplierTask?.Timestamp ||
+    supplierTask?.createdAt ||
+    supplierTask?.CreatedAt ||
+    supplierTask?.assignedOn ||
+    supplierTask?.AssignedOn ||
+    supplierTask?.TaskAssignedOn ||
+    taskItem?.timestamp ||
+    taskItem?.Timestamp ||
+    taskItem?.CreatedAt ||
+    taskItem?.createdAt ||
+    taskItem?.TaskAssignedOn ||
+    emailDraft?.timestamp ||
+    emailDraft?.Timestamp ||
+    emailDraft?.createdAt ||
+    emailDraft?.CreatedAt ||
+    emailDraft?.generatedAt ||
+    emailDraft?.GeneratedAt ||
+    ""
+  );
+};
+
+const parseMessageDate = (value = "") => {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const formatMessageTime = (value = "") => {
+  const date = parseMessageDate(value);
+  if (!date) return "";
+
+  return new Intl.DateTimeFormat("en-IN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+    timeZone: "Asia/Kolkata",
+  }).format(date);
+};
+
+const getMessageDateKey = (value = "") => {
+  const date = parseMessageDate(value);
+  if (!date) return "";
+
+  return new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    timeZone: "Asia/Kolkata",
+  }).format(date);
+};
+
+const formatMessageDateSeparator = (value = "") => {
+  const date = parseMessageDate(value);
+  if (!date) return "";
+
+  const todayKey = getMessageDateKey(new Date().toISOString());
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const yesterdayKey = getMessageDateKey(yesterday.toISOString());
+  const messageKey = getMessageDateKey(value);
+
+  if (messageKey === todayKey) return "Today";
+  if (messageKey === yesterdayKey) return "Yesterday";
+
+  return new Intl.DateTimeFormat("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    timeZone: "Asia/Kolkata",
+  }).format(date);
+};
+
+/* ===============================
    ✅ Common message helpers
    =============================== */
 
@@ -496,6 +627,15 @@ const buildSupplierTaskFallbackMessage = (sessionId = "", taskLike = {}) => {
 
   return {
     id: `supplier-task-fallback-${String(sessionId || "")}`,
+    timestamp:
+      taskLike?.timestamp ||
+      taskLike?.Timestamp ||
+      taskLike?.createdAt ||
+      taskLike?.CreatedAt ||
+      taskLike?.lastActivityAt ||
+      taskLike?.TaskAssignedOn ||
+      taskLike?.assignedOn ||
+      "",
     sender: "bot",
     role: "assistant",
     text: "Supplier task loaded.",
@@ -6397,6 +6537,10 @@ const ChatWindow = ({
 
     const nextMessage = {
       ...msg,
+      // Local messages are being created right now in the browser, so assigning
+      // the current ISO timestamp is correct. Persisted/history messages keep
+      // their backend timestamp because getMessageTimestamp(msg) wins first.
+      timestamp: getMessageTimestamp(msg) || new Date().toISOString(),
       sender,
       text,
       role: msg.role || (sender === "bot" ? "assistant" : "user"),
@@ -6458,6 +6602,28 @@ const ChatWindow = ({
         options: Array.isArray(m.options) ? m.options : [],
         inputType: m.inputType || null,
         emailDraft,
+        // Keep the persisted backend time. Do not use the current render time
+        // for historical messages because refresh would make old times wrong.
+        timestamp:
+          m.timestamp ||
+          m.Timestamp ||
+          m.createdAt ||
+          m.CreatedAt ||
+          m.messageTimestamp ||
+          m.MessageTimestamp ||
+          m.sentAt ||
+          m.SentAt ||
+          "",
+        createdAt:
+          m.createdAt ||
+          m.CreatedAt ||
+          m.timestamp ||
+          m.Timestamp ||
+          m.messageTimestamp ||
+          m.MessageTimestamp ||
+          m.sentAt ||
+          m.SentAt ||
+          "",
       };
     });
 
@@ -9479,6 +9645,33 @@ Next step: Waiting for the customer response. Once the reply is received, review
     [normalizedMessages]
   );
 
+  const emailReviewActionTimestamp = useMemo(() => {
+    const list = Array.isArray(normalizedMessages) ? normalizedMessages : [];
+
+    for (let i = list.length - 1; i >= 0; i -= 1) {
+      const message = list[i] || {};
+      const artifact = message?.artifact || {};
+      const text = String(extractMessageText(message) || message?.text || "")
+        .trim()
+        .toLowerCase();
+
+      const isEmailReviewSource =
+        artifact?.type === "email_review_task" ||
+        artifact?.AskType === "EMAIL REVIEW" ||
+        message?.AskType === "EMAIL REVIEW" ||
+        text.includes("customer_email_reply") ||
+        text.includes("customer email reply received") ||
+        text.includes("status moved to email-review");
+
+      if (isEmailReviewSource) {
+        const timestamp = getMessageTimestamp(message);
+        if (timestamp) return timestamp;
+      }
+    }
+
+    return "";
+  }, [normalizedMessages]);
+
   const canShowEmailReviewActionCard = useMemo(() => {
     // Request Monitoring & Status should only show the dashboard/status view.
     // Do not show old EMAIL-REVIEW action cards here because they confuse the
@@ -9609,6 +9802,11 @@ Next step: Waiting for the customer response. Once the reply is received, review
                     onUploadComplete={handleSupplierTaskUpdated}
                     onSubmitComplete={handleSupplierTaskUpdated}
                   />
+                  {formatMessageTime(getMessageTimestamp(supplierTaskFallbackMessage)) && (
+                    <div className="message-time">
+                      {formatMessageTime(getMessageTimestamp(supplierTaskFallbackMessage))}
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -9639,8 +9837,26 @@ Next step: Waiting for the customer response. Once the reply is received, review
                 !!m?.supplierTask &&
                 (isActiveSupplierTaskSession || supplierTaskDocsCount > 0);
 
+              const messageTimestamp = getMessageTimestamp(m);
+              const messageTimeLabel = formatMessageTime(messageTimestamp);
+              const currentDateKey = getMessageDateKey(messageTimestamp);
+              const previousDateKey =
+                index > 0
+                  ? getMessageDateKey(
+                      getMessageTimestamp(normalizedMessages[index - 1])
+                    )
+                  : "";
+              const showDateSeparator =
+                Boolean(currentDateKey) && currentDateKey !== previousDateKey;
+
               return (
                 <React.Fragment key={`${chat?.id || "chat"}-${m.id || "msg"}-${index}`}>
+                  {showDateSeparator && (
+                    <div className="message-date-separator" role="separator">
+                      <span>{formatMessageDateSeparator(messageTimestamp)}</span>
+                    </div>
+                  )}
+
                   {showForm &&
                     formDraft &&
                     computedFormInsertIndex === index &&
@@ -9710,6 +9926,22 @@ Next step: Waiting for the customer response. Once the reply is received, review
                       !isCustomerFlowQuestionText(m.text || "") &&
                       renderArtifact(m)}
                     {renderAttachments(m.attachments)}
+                    {messageTimeLabel && (
+                      <div
+                        className="message-time"
+                        title={new Intl.DateTimeFormat("en-IN", {
+                          day: "2-digit",
+                          month: "short",
+                          year: "numeric",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                          hour12: true,
+                          timeZone: "Asia/Kolkata",
+                        }).format(parseMessageDate(messageTimestamp))}
+                      >
+                        {messageTimeLabel}
+                      </div>
+                    )}
                     </div>
                   </div>
                 </React.Fragment>
@@ -9735,6 +9967,22 @@ Next step: Waiting for the customer response. Once the reply is received, review
                     onRequestChanges={handleRequestChangesFromEmailReview}
                     loading={submittingEmailReview}
                   />
+                  {formatMessageTime(emailReviewActionTimestamp) && (
+                    <div
+                      className="message-time"
+                      title={new Intl.DateTimeFormat("en-IN", {
+                        day: "2-digit",
+                        month: "short",
+                        year: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                        hour12: true,
+                        timeZone: "Asia/Kolkata",
+                      }).format(parseMessageDate(emailReviewActionTimestamp))}
+                    >
+                      {formatMessageTime(emailReviewActionTimestamp)}
+                    </div>
+                  )}
                 </div>
               </div>
             )}

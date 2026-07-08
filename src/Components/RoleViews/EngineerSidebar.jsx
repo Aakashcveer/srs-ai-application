@@ -176,6 +176,41 @@ const EngineerSidebar = ({
   };
 
 
+  const getCustomerRequestStatusPill = (item = {}) => {
+    const rawStatus = String(
+      item?.requestStatus ||
+        item?.RequestStatus ||
+        item?.workflowState ||
+        item?.WorkflowState ||
+        item?.status ||
+        item?.Status ||
+        ""
+    )
+      .trim()
+      .toUpperCase()
+      .replace(/_/g, "-")
+      .replace(/\s+/g, "-");
+
+    const statusMap = {
+      "REQUEST-CREATE": { label: "Created", tone: "created" },
+      "REQUEST-CREATED": { label: "Created", tone: "created" },
+      "REQUEST-REVIEW": { label: "Review", tone: "review" },
+      "EMAIL-REVIEW": { label: "Action", tone: "action" },
+      "PENDING-ENGINEER-ACTION": { label: "Action", tone: "action" },
+      "REQUEST-CONFIRMED": { label: "Confirmed", tone: "confirmed" },
+      "ASSESSMENT-TRIGGERED": { label: "Submitted", tone: "submitted" },
+      "ASSESSMENT-INPROGRESS": { label: "Assessment", tone: "assessment" },
+      "ASSESSMENT-IN-PROGRESS": { label: "Assessment", tone: "assessment" },
+      "ASSESSMENT-COMPLETED": { label: "Complete", tone: "complete" },
+      "RESULTS-REVIEW": { label: "Results Review", tone: "results" },
+      "RESULTS-APPROVED": { label: "Approved", tone: "approved" },
+      "RESULTS-SUBMITTED": { label: "Submitted", tone: "submitted" },
+      "REQUEST-CLOSED": { label: "Closed", tone: "closed" },
+    };
+
+    return rawStatus ? statusMap[rawStatus] || null : null;
+  };
+
   const getSupplierUploadedDocumentsCount = (item = {}) => {
     const possibleArrays = [
       item?.uploadedDocuments,
@@ -448,18 +483,31 @@ const EngineerSidebar = ({
       <div className="role-list">
         {customerRequestList.map((r) => {
           const { display, hover } = getDisplayAndHover(r);
+          const statusPill = getCustomerRequestStatusPill(r);
+          const isActionRequired = statusPill?.tone === "action";
 
           return (
             <button
               key={r.sessionId}
               className={`role-list-item ${
                 activeId === r.sessionId ? "active" : ""
-              }`}
+              } ${isActionRequired ? "action-required" : ""}`}
               onClick={() => onSelectRequest?.(r.sessionId)}
-              title={hover}
+              title={isActionRequired ? `${hover}\nPending Engineer Action` : hover}
               type="button"
             >
-              <span>{display}</span>
+              <span className="role-request-id">{display}</span>
+              {statusPill && (
+                <span
+                  className={`role-status-pill role-status-pill--${statusPill.tone}`}
+                  title={statusPill.label}
+                >
+                  {isActionRequired && (
+                    <span className="role-status-dot" aria-hidden="true" />
+                  )}
+                  {statusPill.label}
+                </span>
+              )}
             </button>
           );
         })}

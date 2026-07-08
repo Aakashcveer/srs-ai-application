@@ -848,3 +848,139 @@ body.dark .switch input:checked + .slider {
 .role-list-item.supplier-task-highlighter.active::before {
   display: none;
 }
+
+/* =========================================================
+   Customer request compact status labels
+   ========================================================= */
+.role-list-item {
+  min-width: 0;
+  gap: 8px;
+}
+
+.role-request-id {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+}
+
+/* Compact enterprise-style status text.
+   No heavy pill background; the request ID keeps visual priority. */
+.role-status-pill {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 78px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+
+  font-size: 10.5px;
+  line-height: 1.2;
+  font-weight: 700;
+  letter-spacing: 0;
+  color: var(--sb-muted);
+}
+
+/* Normal states stay intentionally quiet. */
+.role-status-pill--created,
+.role-status-pill--closed {
+  color: var(--sb-muted);
+}
+
+.role-status-pill--review {
+  color: #2563eb;
+}
+
+.role-status-pill--confirmed,
+.role-status-pill--complete,
+.role-status-pill--approved {
+  color: #059669;
+}
+
+.role-status-pill--assessment,
+.role-status-pill--submitted,
+.role-status-pill--results {
+  color: #6366f1;
+}
+
+/* Action is the one state that should stand out. */
+.role-status-pill--action {
+  color: #c66a08;
+  font-weight: 800;
+  max-width: 64px;
+}
+
+/* Tiny signal dot, not a large badge. */
+.role-status-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
+  border-radius: 50%;
+  background: #f59e0b;
+  box-shadow: none;
+}
+
+/* Remove the previous orange row fill.
+   Use a restrained left accent only when the row is not selected. */
+.role-list-item.action-required:not(.active) {
+  position: relative;
+  background: transparent;
+}
+
+.role-list-item.action-required:not(.active)::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 9px;
+  bottom: 9px;
+  width: 2px;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.85);
+}
+
+.role-list-item.action-required:not(.active):hover {
+  background: var(--sb-hover);
+}
+
+/* Dark theme */
+body.dark .role-status-pill--review,
+.dark .role-status-pill--review {
+  color: #93c5fd;
+}
+
+body.dark .role-status-pill--confirmed,
+body.dark .role-status-pill--complete,
+body.dark .role-status-pill--approved,
+.dark .role-status-pill--confirmed,
+.dark .role-status-pill--complete,
+.dark .role-status-pill--approved {
+  color: #6ee7b7;
+}
+
+body.dark .role-status-pill--assessment,
+body.dark .role-status-pill--submitted,
+body.dark .role-status-pill--results,
+.dark .role-status-pill--assessment,
+.dark .role-status-pill--submitted,
+.dark .role-status-pill--results {
+  color: #c7d2fe;
+}
+
+body.dark .role-status-pill--action,
+.dark .role-status-pill--action {
+  color: #fbbf24;
+}
+
+.role-sidebar.collapsed .role-status-pill {
+  display: none;
+}

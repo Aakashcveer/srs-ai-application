@@ -279,6 +279,28 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
         taskId: m.taskId || m.TaskId || "",
         taskStatus: m.taskStatus || m.TaskStatus || "",
         sessionType: m.sessionType || m.SessionType || "",
+        // Preserve the real backend message time so ChatWindow can render
+        // WhatsApp-style timestamps without inventing a new time on refresh.
+        timestamp:
+          m.timestamp ||
+          m.Timestamp ||
+          m.createdAt ||
+          m.CreatedAt ||
+          m.messageTimestamp ||
+          m.MessageTimestamp ||
+          m.sentAt ||
+          m.SentAt ||
+          "",
+        createdAt:
+          m.createdAt ||
+          m.CreatedAt ||
+          m.timestamp ||
+          m.Timestamp ||
+          m.messageTimestamp ||
+          m.MessageTimestamp ||
+          m.sentAt ||
+          m.SentAt ||
+          "",
       };
     });
 

@@ -5074,3 +5074,102 @@ body.dark .emailDraftEditBtn {
   border-color: rgba(129, 140, 248, 0.28);
   color: #c7d2fe;
 }
+
+
+/* =========================================================
+   Universal message timestamps + date separators
+   ========================================================= */
+
+/* One consistent rule for normal bubbles and rich cards:
+   timestamp sits at the bottom-right of the visible message container. */
+.message-time {
+  width: 100%;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  margin-top: 8px;
+  padding: 0 2px;
+
+  font-size: 10.5px;
+  line-height: 1;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: var(--muted);
+  opacity: 0.78;
+  user-select: none;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* User bubble keeps readable white timestamp, still bottom-right. */
+.msg-row.user .message-time {
+  justify-content: flex-end;
+  text-align: right;
+  color: rgba(255, 255, 255, 0.76) !important;
+}
+
+/* Assistant timestamps are no longer left-aligned/disconnected. */
+.msg-row.bot .message-time {
+  justify-content: flex-end;
+  text-align: right;
+  color: var(--muted);
+}
+
+/* Rich-card bubbles often become transparent/full-width via :has().
+   Keep the time visually attached to the card edge rather than floating left. */
+.msg-row.bot .msg-bubble:has(.formCard) .message-time,
+.msg-row.bot .msg-bubble:has(.emailDraftShell) .message-time,
+.msg-row.bot .msg-bubble:has(.assessmentPdfStack) .message-time,
+.msg-row.bot .msg-bubble:has(.assessmentPdfCard) .message-time,
+.msg-row.bot .msg-bubble:has(.supplierTaskCard) .message-time,
+.msg-row.bot .msg-bubble:has(.customer-request-step-card) .message-time,
+.msg-row.bot .msg-bubble:has(.emailSentConfirmationCard) .message-time {
+  padding-right: 4px;
+}
+
+body.dark .message-time {
+  color: rgba(226, 232, 240, 0.66);
+}
+
+.message-date-separator {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 10px 0 18px;
+  position: relative;
+}
+
+.message-date-separator::before,
+.message-date-separator::after {
+  content: "";
+  height: 1px;
+  flex: 1;
+  max-width: 180px;
+  background: var(--input-border);
+}
+
+.message-date-separator span {
+  margin: 0 12px;
+  padding: 5px 10px;
+  border: 1px solid var(--input-border);
+  border-radius: 999px;
+  background: var(--chat-bg);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+body.dark .message-date-separator span {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+@media (max-width: 780px) {
+  .message-date-separator::before,
+  .message-date-separator::after {
+    max-width: 90px;
+  }
+}
