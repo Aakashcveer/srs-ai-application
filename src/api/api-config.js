@@ -18,7 +18,7 @@ export const API_BASE_URL = (
 // All assessment triggers now go through /fmd-assessment on the main chat API.
 
 console.log("✅ LOADED api-config.js FROM:", import.meta.url, "TIME:", Date.now());
-console.log("✅ api-config UPDATED VERSION 1030 - UX EMAIL FLOW FIXES");
+console.log("✅ api-config UPDATED VERSION 1031 - DIRTY FORM POLLING + ENGINEER LANDING");
 console.log("✅ CHAT API BASE URL:", API_BASE_URL);
 console.log("✅ FMD CORE ENGINE URL:", `${API_BASE_URL}/fmd-assessment`);
 
@@ -1159,6 +1159,9 @@ export const sendChatMessage = async (
 // ===============================
 // INITIALISE CHAT
 // ===============================
+// Used by initial load and 30-second polling. The caller decides whether returned
+// formState is safe to apply; Chat.jsx now ignores backend formState while the
+// active Customer Request form has unsaved local edits.
 export const initialiseChat = async (token, email, sessionId = null) => {
   assertToken(token);
   if (!email) throw new Error("Token or email missing");

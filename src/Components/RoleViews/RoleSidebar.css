@@ -176,14 +176,23 @@ body.dark,
 
   cursor: pointer;
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 500;
 
   transition: background 160ms var(--sb-ease),
+    color 160ms var(--sb-ease),
+    font-weight 160ms var(--sb-ease),
     transform 160ms var(--sb-ease);
 }
 
 .role-menu-item:hover {
   background: var(--sb-hover);
+}
+
+/* Only the currently open My Assistant item is visually emphasized. */
+.role-menu-item.active {
+  background: var(--sb-active);
+  color: var(--sb-text);
+  font-weight: 800;
 }
 
 .role-menu-item:active {
@@ -243,7 +252,11 @@ body.dark .role-list::-webkit-scrollbar-thumb {
   display: flex;
   align-items: center;
 
+  font-weight: 500;
+
   transition: background 160ms var(--sb-ease),
+    color 160ms var(--sb-ease),
+    font-weight 160ms var(--sb-ease),
     transform 160ms var(--sb-ease);
 }
 
@@ -253,11 +266,12 @@ body.dark .role-list::-webkit-scrollbar-thumb {
 
 .role-list-item.active {
   background: var(--sb-active);
+  font-weight: 800;
 }
 
 .role-list-item span {
   font-size: 14px;
-  font-weight: 750;
+  font-weight: inherit;
   letter-spacing: -0.1px;
 
   overflow: hidden;
@@ -762,7 +776,7 @@ body.dark .switch input:checked + .slider {
   position: relative;
   overflow: visible;
   background: transparent !important;
-  font-weight: 900;
+  font-weight: 800;
   isolation: isolate;
 }
 
@@ -801,7 +815,7 @@ body.dark .switch input:checked + .slider {
   position: relative;
   overflow: visible;
   background: transparent !important;
-  font-weight: 900;
+  font-weight: 800;
   isolation: isolate;
 }
 

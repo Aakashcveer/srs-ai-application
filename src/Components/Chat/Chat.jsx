@@ -170,6 +170,29 @@ const isAutoRefreshEligibleSession = (sessionId) => {
   return true;
 };
 
+// Engineering users should land on the Customer Request Assistant instead of
+// automatically opening the newest/topmost business request.
+const findCustomerRequestHelperSessionId = (normalizedSessions = {}) => {
+  const assistantList = normalizedSessions?.groupedSessions?.myAssistant || [];
+
+  const helper = assistantList.find((item) => {
+    const title = String(item?.title || "").trim().toLowerCase();
+    const sessionId = String(item?.sessionId || "").trim().toLowerCase();
+    const sessionType = String(
+      item?.sessionType || item?.SessionType || item?.kcSessionType || ""
+    )
+      .trim()
+      .toLowerCase();
+
+    return (
+      sessionId === "new customer request" ||
+      (sessionType === "my assistant" && title === "customer request")
+    );
+  });
+
+  return helper?.sessionId || "New Customer Request";
+};
+
 
 const Chat = ({ theme, toggleTheme, onLogout }) => {
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -189,6 +212,7 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
   const [showIdleWarning, setShowIdleWarning] = useState(false);
   const [idleSecondsLeft, setIdleSecondsLeft] = useState(null);
   const [formStateMap, setFormStateMap] = useState({});
+  const [formDirtyMap, setFormDirtyMap] = useState({});
 
   // Agent Mode is removed from the UI.
   // Keep frontend fixed to normal /chat mode so old localStorage cannot call /agentcore-chat.
@@ -197,6 +221,7 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
   const activeSessionIdRef = useRef(activeSessionId);
   const userEmailRef = useRef("");
   const messagesRef = useRef(messages);
+  const formDirtyMapRef = useRef(formDirtyMap);
   const isAutoRefreshingRef = useRef(false);
 
   const role = String(user?.profile || user?.role || "")
@@ -218,6 +243,10 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  useEffect(() => {
+    formDirtyMapRef.current = formDirtyMap;
+  }, [formDirtyMap]);
 
   useEffect(() => {
     localStorage.setItem("agentMode", "false");
@@ -290,6 +319,17 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
       if (normalized) copy[sessionId] = normalized;
       else delete copy[sessionId];
       return copy;
+    });
+  };
+
+  const setFormDirtyForSession = (sessionId, isDirty) => {
+    if (!sessionId) return;
+
+    setFormDirtyMap((prev) => {
+      const next = { ...prev };
+      if (isDirty) next[sessionId] = true;
+      else delete next[sessionId];
+      return next;
     });
   };
 
@@ -766,16 +806,41 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
 
         syncUserWithBackendProfile(profile, data);
 
-        const sid = data.activeSessionId || null;
-        const normalized = normalizeMessages(data.messages || []);
+        const normalizedSessions = normalizeSessionsPayload(data);
+        const resolvedProfile = String(
+          data?.profile || profile?.profile || profile?.role || ""
+        )
+          .trim()
+          .toLowerCase();
 
-        setSessions(normalizeSessionsPayload(data));
+        // Engineering landing-page rule: do not auto-open the topmost request.
+        // Always start on the Customer Request Assistant launcher where the
+        // engineer can intentionally choose Create New or Work on Existing.
+        const engineerLandingSessionId =
+          resolvedProfile === "engineering"
+            ? findCustomerRequestHelperSessionId(normalizedSessions)
+            : "";
 
-        if (sid && isCustomerRequestHelperSessionId(sid)) {
+        const sid = engineerLandingSessionId || data.activeSessionId || null;
+        const normalized = engineerLandingSessionId
+          ? []
+          : normalizeMessages(data.messages || []);
+
+        setSessions(normalizedSessions);
+
+        if (engineerLandingSessionId || (sid && isCustomerRequestHelperSessionId(sid))) {
           setActiveSessionId(sid);
           setMessages([]);
           setFormForSession(sid, null);
+          setFormDirtyForSession(sid, false);
           setSessionMessagesMap((prev) => ({ ...prev, [sid]: [] }));
+
+          const prevState = loadSessionState();
+          saveSessionState({
+            activeSessionId: sid,
+            lastActivityAt: Date.now(),
+            sessionStartedAt: prevState?.sessionStartedAt || Date.now(),
+          });
         } else {
           if (sid) setFormForSession(sid, data?.formState || null);
 
@@ -825,7 +890,13 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
         syncUserWithBackendProfile(user, data);
         setSessions(normalizeSessionsPayload(data));
 
-        if (data?.formState) {
+        const activeFormIsDirty = Boolean(
+          formDirtyMapRef.current?.[latestSessionId]
+        );
+
+        // Never replace an unsaved form with the older backend formState returned
+        // by /initialise. Messages/status can still refresh in the background.
+        if (data?.formState && !activeFormIsDirty) {
           setFormForSession(latestSessionId, data.formState);
         }
 
@@ -1332,6 +1403,9 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
   })();
 
   const activeFormState = activeSessionId ? formStateMap[activeSessionId] : null;
+  const activeFormIsDirty = Boolean(
+    activeSessionId && formDirtyMap[activeSessionId]
+  );
 
   const customerRequestHelperSessionId = getCustomerRequestHelperSessionId();
 
@@ -1464,6 +1538,10 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
         formState={activeFormState}
         onFormStateChange={(sessionId, nextFormState) =>
           setFormForSession(sessionId, nextFormState)
+        }
+        isFormDirty={activeFormIsDirty}
+        onFormDirtyChange={(sessionId, isDirty) =>
+          setFormDirtyForSession(sessionId, isDirty)
         }
         onOpenRequestFromStatusTable={handleOpenRequestFromStatusTable}
         isCustomerRequestStarterSession={isCustomerRequestStarterSession}

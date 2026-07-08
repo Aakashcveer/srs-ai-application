@@ -3819,6 +3819,9 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail, onPreviewAttachment, 
   const [sendingEmail, setSendingEmail] = useState(false);
   const [sentSuccessfully, setSentSuccessfully] = useState(false);
 
+  const emailBodyTextareaRef = useRef(null);
+  const pendingEmailCaretPositionRef = useRef(null);
+
   useEffect(() => {
     const nextIsSupplier =
       Boolean(draft?.isSupplierEmail) || isSupplierEmailDraft(draft);
@@ -3837,6 +3840,97 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail, onPreviewAttachment, 
     setSentSuccessfully(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft]);
+
+  const getCharacterOffsetWithin = (container, node, nodeOffset = 0) => {
+    if (!container || !node) return null;
+
+    try {
+      const range = document.createRange();
+      range.selectNodeContents(container);
+      range.setEnd(node, nodeOffset);
+      return range.toString().length;
+    } catch {
+      return null;
+    }
+  };
+
+  const handlePreviewDoubleClick = (event) => {
+    if (savingDraft || sendingEmail || sentSuccessfully) return;
+
+    const previewElement = event.currentTarget;
+    let caretPosition = null;
+
+    // Prefer the browser's actual selection created by the double click.
+    const selection = window.getSelection?.();
+    if (
+      selection &&
+      selection.rangeCount > 0 &&
+      selection.anchorNode &&
+      previewElement.contains(selection.anchorNode)
+    ) {
+      caretPosition = getCharacterOffsetWithin(
+        previewElement,
+        selection.anchorNode,
+        selection.anchorOffset
+      );
+    }
+
+    // Fallback: resolve the DOM position from the mouse coordinates.
+    if (caretPosition === null) {
+      let caretNode = null;
+      let caretOffset = 0;
+
+      if (document.caretPositionFromPoint) {
+        const pos = document.caretPositionFromPoint(event.clientX, event.clientY);
+        caretNode = pos?.offsetNode || null;
+        caretOffset = pos?.offset || 0;
+      } else if (document.caretRangeFromPoint) {
+        const range = document.caretRangeFromPoint(event.clientX, event.clientY);
+        caretNode = range?.startContainer || null;
+        caretOffset = range?.startOffset || 0;
+      }
+
+      if (caretNode && previewElement.contains(caretNode)) {
+        caretPosition = getCharacterOffsetWithin(
+          previewElement,
+          caretNode,
+          caretOffset
+        );
+      }
+    }
+
+    const bodyLength = String(localDraft?.body || "").length;
+    pendingEmailCaretPositionRef.current =
+      caretPosition === null
+        ? bodyLength
+        : Math.max(0, Math.min(caretPosition, bodyLength));
+
+    setIsEditing(true);
+  };
+
+  useLayoutEffect(() => {
+    if (!isEditing) return;
+
+    const textarea = emailBodyTextareaRef.current;
+    if (!textarea) return;
+
+    const caretPosition = pendingEmailCaretPositionRef.current;
+
+    // Wait until the textarea is mounted and painted.
+    requestAnimationFrame(() => {
+      textarea.focus();
+
+      if (typeof caretPosition === "number") {
+        const safePosition = Math.max(
+          0,
+          Math.min(caretPosition, textarea.value.length)
+        );
+        textarea.setSelectionRange(safePosition, safePosition);
+      }
+
+      pendingEmailCaretPositionRef.current = null;
+    });
+  }, [isEditing]);
 
   if (!draft || isEmptyEmailDraft(draft)) return null;
 
@@ -3976,28 +4070,6 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail, onPreviewAttachment, 
             {isSupplier ? "Supplier Request" : "Customer Review"}
           </span>
 
-          <button
-            type="button"
-            className="premiumGhostBtn emailDraftEditBtn"
-            onClick={() => setIsEditing((prev) => !prev)}
-            disabled={savingDraft || sendingEmail || sentSuccessfully}
-            title="Review and edit the email before sending"
-            style={{
-              width: "148px",
-              height: "44px",
-              boxSizing: "border-box",
-              flexShrink: 0,
-            }}
-          >
-            {isEditing ? (
-              "Preview Email"
-            ) : (
-              <>
-                <Pencil size={16} strokeWidth={2.2} aria-hidden="true" />
-                <span>Edit Email</span>
-              </>
-            )}
-          </button>
         </div>
       </div>
 
@@ -4049,6 +4121,7 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail, onPreviewAttachment, 
       <div className="emailDraftBodyCard">
         {isEditing ? (
           <textarea
+            ref={emailBodyTextareaRef}
             className="emailDraftTextarea"
             value={localDraft.body}
             onChange={(e) => updateField("body", e.target.value)}
@@ -4056,7 +4129,21 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail, onPreviewAttachment, 
             placeholder="Write email body..."
           />
         ) : (
-          <div className="emailDraftPreview markdown-body">
+          <div
+            className="emailDraftPreview markdown-body"
+            onDoubleClick={handlePreviewDoubleClick}
+            title={
+              sentSuccessfully
+                ? "Email already sent"
+                : "Double-click email content to edit"
+            }
+            style={{
+              cursor:
+                savingDraft || sendingEmail || sentSuccessfully
+                  ? "default"
+                  : "text",
+            }}
+          >
             <MarkdownRenderer text={localDraft.body || ""} />
           </div>
         )}
@@ -4129,12 +4216,56 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail, onPreviewAttachment, 
             : "Review the draft. Use “Edit Email” to change recipient, subject, or message before sending."}
         </div>
 
-        <div className="emailDraftFooterActions">
+        <div
+          className="emailDraftFooterActions"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "flex-end",
+            gap: "10px",
+            flexWrap: "nowrap",
+          }}
+        >
+          <button
+            type="button"
+            className="premiumGhostBtn emailDraftEditBtn"
+            onClick={() => setIsEditing((prev) => !prev)}
+            disabled={savingDraft || sendingEmail || sentSuccessfully}
+            title="Review and edit the email before sending"
+            style={{ minWidth: "120px", whiteSpace: "nowrap" }}
+          >
+            {isEditing ? (
+              "Preview Email"
+            ) : (
+              <>
+                <Pencil size={16} strokeWidth={2.2} aria-hidden="true" />
+                <span>Edit Email</span>
+              </>
+            )}
+          </button>
+
           <button
             type="button"
             className="premiumGhostBtn"
             onClick={handleSave}
             disabled={savingDraft || sendingEmail || sentSuccessfully}
+            style={{
+              minWidth: "110px",
+              minHeight: "50px",
+              borderRadius: "14px",
+              border: "1px solid rgba(99, 102, 241, 0.35)",
+              background: "#ffffff",
+              color: "#3730a3",
+              fontWeight: 800,
+              whiteSpace: "nowrap",
+              boxShadow: "0 8px 20px rgba(99, 102, 241, 0.06)",
+              cursor:
+                savingDraft || sendingEmail || sentSuccessfully
+                  ? "not-allowed"
+                  : "pointer",
+              opacity:
+                savingDraft || sendingEmail || sentSuccessfully ? 0.65 : 1,
+            }}
           >
             {savingDraft ? "Saving..." : sentSuccessfully ? "Sent" : "Save Draft"}
           </button>
@@ -4144,6 +4275,7 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail, onPreviewAttachment, 
             className="formSaveBtn premiumFormSaveBtn"
             onClick={handleSend}
             disabled={sendingEmail || savingDraft || sentSuccessfully}
+            style={{ minWidth: "150px", whiteSpace: "nowrap" }}
           >
             {sentSuccessfully
               ? "Email Sent"
@@ -6006,6 +6138,8 @@ const ChatWindow = ({
   agentMode,
   formState,
   onFormStateChange,
+  isFormDirty = false,
+  onFormDirtyChange,
   onOpenRequestFromStatusTable,
   isCustomerRequestStarterSession,
   customerRequestSuggestions,
@@ -6071,6 +6205,42 @@ const ChatWindow = ({
     chatIdRef.current = active;
     return active;
   }, [chat?.id]);
+
+  // Protect unsaved Customer Request form values from the 30-second background refresh.
+  // The parent Chat component owns the dirty flag; sessionStorage is a second safety net
+  // for accidental rerenders or a browser refresh in the same tab.
+  const getCustomerRequestDraftStorageKey = useCallback(
+    (sessionId = getActiveSessionId()) =>
+      `assure-ai:customer-request-draft:${String(sessionId || "default-chat")}`,
+    [getActiveSessionId]
+  );
+
+  const persistUnsavedFormDraft = useCallback(
+    (draft, sessionId = getActiveSessionId()) => {
+      try {
+        const key = getCustomerRequestDraftStorageKey(sessionId);
+        if (draft && typeof draft === "object") {
+          sessionStorage.setItem(key, JSON.stringify(draft));
+        } else {
+          sessionStorage.removeItem(key);
+        }
+      } catch (e) {
+        console.warn("Unable to persist unsaved customer request draft", e);
+      }
+    },
+    [getActiveSessionId, getCustomerRequestDraftStorageKey]
+  );
+
+  const clearUnsavedFormDraft = useCallback(
+    (sessionId = getActiveSessionId()) => {
+      try {
+        sessionStorage.removeItem(getCustomerRequestDraftStorageKey(sessionId));
+      } catch (e) {
+        console.warn("Unable to clear unsaved customer request draft", e);
+      }
+    },
+    [getActiveSessionId, getCustomerRequestDraftStorageKey]
+  );
 
   const isRequestMonitoringSession = useMemo(() => {
     const active = String(chat?.id || chat?.title || "").trim().toLowerCase();
@@ -6774,6 +6944,36 @@ const ChatWindow = ({
       return;
     }
 
+    // Critical polling guard: while the engineer is editing, /initialise may return
+    // an older saved formState every 30 seconds. Never hydrate that older state over
+    // the active local draft. Keep the form visible and preserve the user's values.
+    if (isFormDirty) {
+      let restoredDraft = null;
+
+      try {
+        const raw = sessionStorage.getItem(
+          getCustomerRequestDraftStorageKey(chat?.id || getActiveSessionId())
+        );
+        restoredDraft = raw ? JSON.parse(raw) : null;
+      } catch (e) {
+        console.warn("Unable to restore unsaved customer request draft", e);
+      }
+
+      if (restoredDraft && typeof restoredDraft === "object") {
+        setFormDraft((prev) => prev || restoredDraft);
+      }
+
+      if (formDraft || restoredDraft || hasValidFormState(formState)) {
+        setShowForm(true);
+        setFormInsertIndex((prev) => {
+          if (prev !== null) return prev;
+          return getPersistedFormInsertIndex(chat?.messages || []);
+        });
+      }
+
+      return;
+    }
+
     if (hasValidFormState(formState)) {
       const hydrated = buildCustomerRequestFormDraft(formState);
 
@@ -6798,7 +6998,15 @@ const ChatWindow = ({
     setFormDraft(null);
     setFormSaveMsg("");
     setFormInsertIndex(null);
-  }, [formState, chat?.id, chat?.messages, isActiveSupplierTaskSession]);
+  }, [
+    formState,
+    chat?.id,
+    chat?.messages,
+    isActiveSupplierTaskSession,
+    isFormDirty,
+    getActiveSessionId,
+    getCustomerRequestDraftStorageKey,
+  ]);
 
   const pushLocalCustomerRequestSuggestion = useCallback(
     ({
@@ -7283,23 +7491,63 @@ const ChatWindow = ({
         ? res.Items
         : [];
 
-      const matchedItem =
-        items.find((item) => {
-          const itemSessionId = String(
-            item?.sessionId || item?.SessionId || ""
-          ).trim();
-          const itemRequestId = String(
-            item?.requestId || item?.RequestId || ""
-          ).trim();
+      const normalizeRequestIdForCompare = (value = "") =>
+        String(value || "").trim().toUpperCase();
 
-          return (
-            itemRequestId === activeRequestId ||
-            extractRequestIdFromSessionId(itemSessionId) === activeRequestId ||
-            itemSessionId.includes(activeRequestId)
-          );
-        }) || items[0];
+      const activeRequestKey = normalizeRequestIdForCompare(activeRequestId);
+
+      const matchedItem = items.find((item) => {
+        const itemSessionId = String(
+          item?.sessionId || item?.SessionId || ""
+        ).trim();
+        const itemRequestId = String(
+          item?.requestId || item?.RequestId || ""
+        ).trim();
+        const extractedItemRequestId =
+          extractRequestIdFromSessionId(itemSessionId);
+
+        return (
+          normalizeRequestIdForCompare(itemRequestId) === activeRequestKey ||
+          normalizeRequestIdForCompare(extractedItemRequestId) ===
+            activeRequestKey
+        );
+      });
+
+      // Never fall back to items[0] for workflow status. The backend remains
+      // the source of truth, but only the exact active request may update the
+      // timeline. A search response can contain multiple requests, and using
+      // the first row can incorrectly move the timeline back to REQUEST-CREATE.
+      if (!matchedItem) {
+        console.warn("[timeline-status] No exact active request match", {
+          workingSessionId,
+          activeRequestId,
+          returnedItems: items.length,
+          returnedRequestIds: items
+            .map((item) =>
+              String(item?.requestId || item?.RequestId || "").trim()
+            )
+            .filter(Boolean),
+        });
+        return "";
+      }
 
       const status = getWorkflowStatusFromCustomerRequestItem(matchedItem);
+
+      console.log("[timeline-status] Exact backend request status", {
+        workingSessionId,
+        activeRequestId,
+        matchedSessionId:
+          matchedItem?.sessionId || matchedItem?.SessionId || "",
+        matchedRequestId:
+          matchedItem?.requestId || matchedItem?.RequestId || "",
+        backendRequestStatus:
+          matchedItem?.requestStatus ||
+          matchedItem?.RequestStatus ||
+          matchedItem?.status ||
+          matchedItem?.Status ||
+          "",
+        normalizedTimelineStatus: status || "",
+      });
 
       if (status) {
         setCurrentRequestStatusOverride(status);
@@ -7309,8 +7557,14 @@ const ChatWindow = ({
             [
               {
                 ...(matchedItem || {}),
-                sessionId: matchedItem?.sessionId || matchedItem?.SessionId || workingSessionId,
-                requestId: matchedItem?.requestId || matchedItem?.RequestId || activeRequestId,
+                sessionId:
+                  matchedItem?.sessionId ||
+                  matchedItem?.SessionId ||
+                  workingSessionId,
+                requestId:
+                  matchedItem?.requestId ||
+                  matchedItem?.RequestId ||
+                  activeRequestId,
                 requestStatus: status,
                 rawRequestStatus: status,
                 status,
@@ -7722,6 +7976,8 @@ const ChatWindow = ({
 
       setFormDraft(nextSavedDraft);
       onFormStateChange?.(workingSessionId, nextSavedDraft);
+      onFormDirtyChange?.(workingSessionId, false);
+      clearUnsavedFormDraft(workingSessionId);
 
       pushLocalCustomerRequestSuggestion({
         sessionId: res?.newSessionId || res?.sessionId || workingSessionId,
@@ -7830,6 +8086,8 @@ const ChatWindow = ({
 
         setFormDraft(nextSavedDraft);
         onFormStateChange?.(workingSessionId, nextSavedDraft);
+        onFormDirtyChange?.(workingSessionId, false);
+        clearUnsavedFormDraft(workingSessionId);
 
         pushLocalCustomerRequestSuggestion({
           sessionId: saveRes?.newSessionId || saveRes?.sessionId || workingSessionId,
@@ -7943,7 +8201,16 @@ const ChatWindow = ({
         setGeneratingEmailDraft(false);
       }
     },
-    [user?.email, chat?.id, formDraft, onFormStateChange, pushLocalCustomerRequestSuggestion, getActiveSessionId]
+    [
+      user?.email,
+      chat?.id,
+      formDraft,
+      onFormStateChange,
+      onFormDirtyChange,
+      clearUnsavedFormDraft,
+      pushLocalCustomerRequestSuggestion,
+      getActiveSessionId,
+    ]
   );
 
   const pushFlowMessageFromResponse = (res) => {
@@ -9239,9 +9506,16 @@ Next step: Waiting for the customer response. Once the reply is received, review
         <FormEditorCard
           formDraft={formDraft}
           setFormDraft={(updater) => {
-            setFormDraft((prev) =>
-              typeof updater === "function" ? updater(prev) : updater
-            );
+            setFormDraft((prev) => {
+              const next =
+                typeof updater === "function" ? updater(prev) : updater;
+
+              const activeSessionId = getActiveSessionId();
+              onFormDirtyChange?.(activeSessionId, true);
+              persistUnsavedFormDraft(next, activeSessionId);
+
+              return next;
+            });
           }}
           onSave={handleSaveForm}
           onGenerateEmailDraft={() => handleGenerateEmailDraftFromForm()}

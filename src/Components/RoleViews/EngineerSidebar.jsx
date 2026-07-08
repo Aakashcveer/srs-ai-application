@@ -368,6 +368,8 @@ const EngineerSidebar = ({
     const mappedChatType = normalizeAssistantKey(item);
 
     if (mappedChatType === "NEW_CUSTOMER_REQUEST") {
+      // Engineering landing page / launcher: open the Customer Request Assistant
+      // itself. Do not auto-select the newest request from the list below.
       if (item?.sessionId) {
         onSelectRequest?.(item.sessionId);
         return;
