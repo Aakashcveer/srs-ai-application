@@ -7,8 +7,20 @@ import React, {
   useCallback,
 } from "react";
 import { createPortal } from "react-dom";
-import { FolderOpen, PlusCircle, ChevronDown, Pencil } from "lucide-react";
+import {
+  FolderOpen,
+  PlusCircle,
+  ChevronDown,
+  Pencil,
+  FileSpreadsheet,
+  ListPlus,
+  X,
+  CheckCircle2,
+  AlertTriangle,
+} from "lucide-react";
+import * as XLSX from "xlsx";
 import "./ChatWindow.css";
+import "./MultiPartRequestDemo.css";
 import { UploadIcon, SendIcon } from "./InputIcons";
 import MarkdownRenderer from "./MarkdownRenderer";
 import WorkflowFulfillmentBar from "./WorkflowFulfillmentBar";
@@ -6201,20 +6213,608 @@ const InlineCustomerRequestStarterCard = ({
 /* ===============================
    ✅ Customer request flow card
    =============================== */
+const parsePartOption = (option = "") => {
+  const raw = String(option || "").trim();
+  if (!raw || raw.toLowerCase() === "others") return null;
+
+  const pieces = raw.split("|").map((value) => value.trim()).filter(Boolean);
+  if (pieces.length >= 2) {
+    return {
+      id: `${pieces.slice(1).join("|")}::${pieces[0]}`,
+      partName: pieces[0],
+      partNumber: pieces.slice(1).join(" | "),
+      optionValue: raw,
+      source: "SYSTEM",
+      validationStatus: "VALID",
+    };
+  }
+
+  return {
+    id: raw,
+    partName: raw,
+    partNumber: "",
+    optionValue: raw,
+    source: "SYSTEM",
+    validationStatus: "VALID",
+  };
+};
+
+const normalizePartMatchValue = (value = "") =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "");
+
+const findExcelCellValue = (row = {}, aliases = []) => {
+  const entries = Object.entries(row || {});
+  for (const alias of aliases) {
+    const normalizedAlias = normalizePartMatchValue(alias);
+    const found = entries.find(
+      ([key]) => normalizePartMatchValue(key) === normalizedAlias
+    );
+    if (found && found[1] !== undefined && found[1] !== null) {
+      return String(found[1]).trim();
+    }
+  }
+  return "";
+};
+
+const validateImportedPart = (part = {}, systemParts = []) => {
+  const numberKey = normalizePartMatchValue(part?.partNumber);
+  const nameKey = normalizePartMatchValue(part?.partName);
+
+  const matched = systemParts.find((candidate) => {
+    const candidateNumber = normalizePartMatchValue(candidate?.partNumber);
+    const candidateName = normalizePartMatchValue(candidate?.partName);
+
+    if (numberKey && candidateNumber && numberKey === candidateNumber) return true;
+    if (nameKey && candidateName && nameKey === candidateName) return true;
+    return false;
+  });
+
+  if (!matched) {
+    return {
+      ...part,
+      validationStatus: "NEEDS_REVIEW",
+      matchedOptionValue: "",
+    };
+  }
+
+  return {
+    ...part,
+    partName: part?.partName || matched.partName,
+    partNumber: part?.partNumber || matched.partNumber,
+    validationStatus: "VALID",
+    matchedOptionValue: matched.optionValue,
+  };
+};
+
+/* ===============================
+   ✅ Customer request flow card
+   Multi-part demo + Excel import.
+   Existing backend execution remains single-part.
+   =============================== */
 const CustomerRequestStepCard = ({
   message,
   onSelectOption,
   onSubmitManualInput,
+  sessionId = "",
 }) => {
   const [manualValue, setManualValue] = useState("");
+  const [partMode, setPartMode] = useState("SYSTEM");
+  const [selectedParts, setSelectedParts] = useState([]);
+  const [excelParts, setExcelParts] = useState([]);
+  const [excelFileName, setExcelFileName] = useState("");
+  const [excelError, setExcelError] = useState("");
+  const [showPartReview, setShowPartReview] = useState(true);
+  const excelInputRef = useRef(null);
+
+  const isManual = !!message?.inputType;
+  const stepKey = String(message?.step || "").trim().toLowerCase();
+  const questionKey = String(message?.question || "").trim().toLowerCase();
+
+  const isPartSelectionStep =
+    !isManual &&
+    (
+      stepKey === "customer_part_name" ||
+      stepKey === "customer_part_number" ||
+      stepKey === "customer_part" ||
+      questionKey.includes("select customer part")
+    );
+
+  const systemParts = useMemo(
+    () =>
+      (Array.isArray(message?.options) ? message.options : [])
+        .map(parsePartOption)
+        .filter(Boolean),
+    [message?.options]
+  );
+
+  const storageKey = useMemo(
+    () =>
+      `assure-ai-multipart-demo:${String(sessionId || "customer-request")}:${String(
+        message?.step || "parts"
+      )}`,
+    [sessionId, message?.step]
+  );
 
   useEffect(() => {
     setManualValue("");
   }, [message?.step]);
 
+  useEffect(() => {
+    if (!isPartSelectionStep) return;
+
+    try {
+      const raw = sessionStorage.getItem(storageKey);
+      if (!raw) return;
+      const saved = JSON.parse(raw);
+      if (Array.isArray(saved?.selectedParts)) setSelectedParts(saved.selectedParts);
+      if (Array.isArray(saved?.excelParts)) setExcelParts(saved.excelParts);
+      if (saved?.partMode) setPartMode(saved.partMode);
+      if (saved?.excelFileName) setExcelFileName(saved.excelFileName);
+    } catch (error) {
+      console.warn("Unable to restore multi-part demo state", error);
+    }
+  }, [isPartSelectionStep, storageKey]);
+
+  useEffect(() => {
+    if (!isPartSelectionStep) return;
+
+    try {
+      sessionStorage.setItem(
+        storageKey,
+        JSON.stringify({
+          selectedParts,
+          excelParts,
+          partMode,
+          excelFileName,
+        })
+      );
+    } catch (error) {
+      console.warn("Unable to persist multi-part demo state", error);
+    }
+  }, [
+    isPartSelectionStep,
+    storageKey,
+    selectedParts,
+    excelParts,
+    partMode,
+    excelFileName,
+  ]);
+
   if (!message?.flowType || message.flowType !== "customer_request") return null;
 
-  const isManual = !!message?.inputType;
+  const selectedKeySet = new Set(
+    selectedParts.map((part) =>
+      normalizePartMatchValue(part?.optionValue || part?.partNumber || part?.partName)
+    )
+  );
+
+  const toggleSystemPart = (part) => {
+    const key = normalizePartMatchValue(
+      part?.optionValue || part?.partNumber || part?.partName
+    );
+
+    setSelectedParts((prev) => {
+      const exists = prev.some(
+        (item) =>
+          normalizePartMatchValue(
+            item?.optionValue || item?.partNumber || item?.partName
+          ) === key
+      );
+
+      return exists
+        ? prev.filter(
+            (item) =>
+              normalizePartMatchValue(
+                item?.optionValue || item?.partNumber || item?.partName
+              ) !== key
+          )
+        : [...prev, part];
+    });
+  };
+
+  const removeSelectedPart = (part) => {
+    const key = normalizePartMatchValue(
+      part?.optionValue || part?.partNumber || part?.partName
+    );
+    setSelectedParts((prev) =>
+      prev.filter(
+        (item) =>
+          normalizePartMatchValue(
+            item?.optionValue || item?.partNumber || item?.partName
+          ) !== key
+      )
+    );
+  };
+
+  const handleExcelUpload = async (event) => {
+    const file = event?.target?.files?.[0];
+    if (!file) return;
+
+    setExcelError("");
+    setExcelFileName(file.name);
+
+    try {
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: "array" });
+      const firstSheetName = workbook?.SheetNames?.[0];
+
+      if (!firstSheetName) {
+        throw new Error("No worksheet found in the Excel file.");
+      }
+
+      const rows = XLSX.utils.sheet_to_json(workbook.Sheets[firstSheetName], {
+        defval: "",
+        raw: false,
+      });
+
+      const parsed = rows
+        .map((row, index) => {
+          const partNumber = findExcelCellValue(row, [
+            "Part Number",
+            "Part No",
+            "Customer Part Number",
+            "Customer Part No",
+            "PartNumber",
+            "CustomerPartNumber",
+          ]);
+          const partName = findExcelCellValue(row, [
+            "Part Name",
+            "Customer Part Name",
+            "Part Description",
+            "PartName",
+            "CustomerPartName",
+          ]);
+
+          if (!partNumber && !partName) return null;
+
+          return validateImportedPart(
+            {
+              id: `excel-${index}-${partNumber || partName}`,
+              partNumber,
+              partName,
+              optionValue: "",
+              source: "EXCEL",
+              validationStatus: "NEEDS_REVIEW",
+              rowNumber: index + 2,
+            },
+            systemParts
+          );
+        })
+        .filter(Boolean);
+
+      if (!parsed.length) {
+        throw new Error(
+          "No part rows detected. Add columns such as Part Number and Part Name."
+        );
+      }
+
+      setExcelParts(parsed);
+      setShowPartReview(true);
+    } catch (error) {
+      console.error("Excel part import failed", error);
+      setExcelParts([]);
+      setExcelError(
+        error?.message || "Unable to read this Excel file. Please check the columns."
+      );
+    } finally {
+      if (event?.target) event.target.value = "";
+    }
+  };
+
+  const updateExcelPart = (id, field, value) => {
+    setExcelParts((prev) =>
+      prev.map((part) => {
+        if (part.id !== id) return part;
+        return validateImportedPart(
+          {
+            ...part,
+            [field]: value,
+          },
+          systemParts
+        );
+      })
+    );
+  };
+
+  const removeExcelPart = (id) => {
+    setExcelParts((prev) => prev.filter((part) => part.id !== id));
+  };
+
+  const excelValidCount = excelParts.filter(
+    (part) => part.validationStatus === "VALID"
+  ).length;
+  const excelReviewCount = excelParts.length - excelValidCount;
+
+  const activeParts = partMode === "EXCEL" ? excelParts : selectedParts;
+  const executableParts =
+    partMode === "EXCEL"
+      ? excelParts.filter((part) => part.validationStatus === "VALID")
+      : selectedParts;
+
+  const continueWithPrimaryPart = () => {
+    const primary = executableParts[0];
+    if (!primary) return;
+
+    const optionValue =
+      primary?.matchedOptionValue ||
+      primary?.optionValue ||
+      [
+        String(primary?.partName || "").trim(),
+        String(primary?.partNumber || "").trim(),
+      ]
+        .filter(Boolean)
+        .join(" | ");
+
+    if (!optionValue) return;
+
+    // IMPORTANT:
+    // The UI demonstrates multi-part readiness, but the current Customer Request
+    // backend + KC FMD assessment contract remains single-part. Continue with the
+    // first valid/selected part as the primary demo execution part.
+    onSelectOption?.(optionValue);
+  };
+
+  if (isPartSelectionStep) {
+    return (
+      <div className="customer-request-step-card multipart-demo-card">
+        <div className="customer-request-step-eyebrow">Customer Request Flow</div>
+        <div className="customer-request-step-title">Add parts to this request</div>
+        <div className="multipart-demo-subtitle">
+          Select one or more parts from system master data, or upload an Excel list
+          for bulk review.
+        </div>
+
+        <div className="multipart-mode-grid">
+          <button
+            type="button"
+            className={`multipart-mode-card ${
+              partMode === "SYSTEM" ? "active" : ""
+            }`}
+            onClick={() => setPartMode("SYSTEM")}
+          >
+            <span className="multipart-mode-icon">
+              <ListPlus size={20} />
+            </span>
+            <span>
+              <strong>Select from System</strong>
+              <small>Choose multiple customer parts from master data.</small>
+            </span>
+          </button>
+
+          <button
+            type="button"
+            className={`multipart-mode-card ${
+              partMode === "EXCEL" ? "active" : ""
+            }`}
+            onClick={() => setPartMode("EXCEL")}
+          >
+            <span className="multipart-mode-icon">
+              <FileSpreadsheet size={20} />
+            </span>
+            <span>
+              <strong>Upload Excel</strong>
+              <small>Parse, validate, and review a larger part list.</small>
+            </span>
+          </button>
+        </div>
+
+        {partMode === "SYSTEM" ? (
+          <>
+            <div className="multipart-toolbar">
+              <div>
+                <strong>System Parts</strong>
+                <small>{selectedParts.length} selected</small>
+              </div>
+            </div>
+
+            <div className="multipart-system-list">
+              {systemParts.map((part) => {
+                const selected = selectedKeySet.has(
+                  normalizePartMatchValue(
+                    part?.optionValue || part?.partNumber || part?.partName
+                  )
+                );
+
+                return (
+                  <button
+                    key={part.id}
+                    type="button"
+                    className={`multipart-system-row ${selected ? "selected" : ""}`}
+                    onClick={() => toggleSystemPart(part)}
+                  >
+                    <span className="multipart-check">
+                      {selected ? <CheckCircle2 size={18} /> : null}
+                    </span>
+                    <span className="multipart-system-main">
+                      <strong>{part.partName || "Unnamed Part"}</strong>
+                      <small>{part.partNumber || "No part number"}</small>
+                    </span>
+                    <span className="multipart-row-status">
+                      {selected ? "Selected" : "Add"}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="multipart-excel-drop">
+              <FileSpreadsheet size={28} />
+              <div>
+                <strong>{excelFileName || "Upload customer part list"}</strong>
+                <small>
+                  Supports .xlsx and .xls. Recommended columns: Part Number, Part Name.
+                </small>
+              </div>
+              <button
+                type="button"
+                className="multipart-excel-btn"
+                onClick={() => excelInputRef.current?.click()}
+              >
+                Choose Excel
+              </button>
+              <input
+                ref={excelInputRef}
+                type="file"
+                accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+                onChange={handleExcelUpload}
+              />
+            </div>
+
+            {excelError ? (
+              <div className="multipart-error">
+                <AlertTriangle size={16} />
+                {excelError}
+              </div>
+            ) : null}
+
+            {excelParts.length ? (
+              <>
+                <div className="multipart-validation-summary">
+                  <div>
+                    <strong>{excelParts.length}</strong>
+                    <span>Parts Detected</span>
+                  </div>
+                  <div className="valid">
+                    <strong>{excelValidCount}</strong>
+                    <span>Valid</span>
+                  </div>
+                  <div className={excelReviewCount ? "review" : "valid"}>
+                    <strong>{excelReviewCount}</strong>
+                    <span>Needs Review</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="multipart-review-toggle"
+                    onClick={() => setShowPartReview((prev) => !prev)}
+                  >
+                    {showPartReview ? "Hide list" : `View all ${excelParts.length} parts`}
+                  </button>
+                </div>
+
+                {showPartReview ? (
+                  <div className="multipart-review-table-wrap">
+                    <table className="multipart-review-table">
+                      <thead>
+                        <tr>
+                          <th>#</th>
+                          <th>Part Name</th>
+                          <th>Part Number</th>
+                          <th>Status</th>
+                          <th>Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {excelParts.map((part, index) => (
+                          <tr key={part.id}>
+                            <td>{index + 1}</td>
+                            <td>
+                              <input
+                                value={part.partName || ""}
+                                onChange={(e) =>
+                                  updateExcelPart(part.id, "partName", e.target.value)
+                                }
+                                aria-label={`Part name row ${index + 1}`}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                value={part.partNumber || ""}
+                                onChange={(e) =>
+                                  updateExcelPart(part.id, "partNumber", e.target.value)
+                                }
+                                aria-label={`Part number row ${index + 1}`}
+                              />
+                            </td>
+                            <td>
+                              <span
+                                className={`multipart-validation-pill ${
+                                  part.validationStatus === "VALID"
+                                    ? "valid"
+                                    : "review"
+                                }`}
+                              >
+                                {part.validationStatus === "VALID" ? (
+                                  <CheckCircle2 size={14} />
+                                ) : (
+                                  <AlertTriangle size={14} />
+                                )}
+                                {part.validationStatus === "VALID"
+                                  ? "Valid"
+                                  : "Needs Review"}
+                              </span>
+                            </td>
+                            <td>
+                              <button
+                                type="button"
+                                className="multipart-remove-btn"
+                                onClick={() => removeExcelPart(part.id)}
+                                aria-label={`Remove row ${index + 1}`}
+                              >
+                                <X size={16} />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : null}
+              </>
+            ) : null}
+          </>
+        )}
+
+        {partMode === "SYSTEM" && selectedParts.length ? (
+          <div className="multipart-selected-panel">
+            <div className="multipart-selected-header">
+              <strong>Selected Parts</strong>
+              <span>{selectedParts.length} selected</span>
+            </div>
+            {selectedParts.map((part, index) => (
+              <div key={part.id} className="multipart-selected-row">
+                <span className="multipart-selected-index">{index + 1}</span>
+                <span className="multipart-selected-main">
+                  <strong>{part.partName}</strong>
+                  <small>{part.partNumber}</small>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => removeSelectedPart(part)}
+                  aria-label={`Remove ${part.partName}`}
+                >
+                  <X size={16} />
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        <div className="multipart-demo-footer">
+          <div className="multipart-demo-note">
+            <strong>Multi-part ready</strong>
+            <span>
+              {activeParts.length
+                ? `${activeParts.length} part${activeParts.length === 1 ? "" : "s"} in the current list.`
+                : "Add at least one part to continue."}
+            </span>
+          </div>
+          <button
+            type="button"
+            className="multipart-continue-btn"
+            disabled={!executableParts.length}
+            onClick={continueWithPrimaryPart}
+          >
+            Continue with Part List
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="customer-request-step-card">
@@ -9803,6 +10403,7 @@ Next step: Waiting for the customer response. Once the reply is received, review
                     {m.flowType === "customer_request" ? (
                       <CustomerRequestStepCard
                         message={m}
+                        sessionId={getActiveSessionId()}
                         onSelectOption={handleFlowOptionSelect}
                         onSubmitManualInput={handleManualFlowSubmit}
                       />
