@@ -4482,6 +4482,7 @@ const AssessmentReportCard = ({
   sessionAssessmentMarkdown = "",
   user,
   sessionId,
+  formDraft = {},
   onSaveDraft,
   onSendEmail,
 }) => {
@@ -4503,6 +4504,89 @@ const AssessmentReportCard = ({
   const [loadingAction, setLoadingAction] = useState("");
   const [statusMsg, setStatusMsg] = useState("");
   const [generatedDraft, setGeneratedDraft] = useState(null);
+
+  const buildSecureDeliveryDraft = useCallback(() => {
+    const finalReportS3Path = String(
+      reportS3Path ||
+        artifact?.reportS3Path ||
+        artifact?.ReportS3Path ||
+        artifact?.AssessmentReportS3Path ||
+        artifact?.ReportPublishedFilePath ||
+        ""
+    ).trim();
+
+    const finalAttachmentFileName = fileNameFromS3Path(
+      finalReportS3Path,
+      reportFileName || "assessment-report.pdf"
+    );
+
+    const customerEmail =
+      artifact?.customerEmail ||
+      artifact?.CustomerEmail ||
+      artifact?.CustomerContactEmailId ||
+      artifact?.customerContactEmailId ||
+      message?.customerEmail ||
+      message?.CustomerEmail ||
+      formDraft?.CustomerEmail ||
+      formDraft?.customerEmail ||
+      formDraft?.CustomerContactEmailId ||
+      formDraft?.CustomerDetail?.CustomerContactEmailId ||
+      "";
+
+    const customerName =
+      artifact?.customerName ||
+      artifact?.CustomerName ||
+      message?.customerName ||
+      message?.CustomerName ||
+      formDraft?.CustomerName ||
+      "Customer";
+
+    const secureDeliverySubject = "Your ASSURE-AI Report is Ready";
+    const secureDeliveryBody = [
+      "Dear Customer,",
+      "",
+      "Your ASSURE-AI report is ready for secure download.",
+      "",
+      `Request ID: ${requestId || "Not provided"}`,
+      "",
+      "Open Secure Report Link",
+      "",
+      "For security, you may be asked to verify using OTP before downloading the report.",
+      "",
+      "Regards,",
+      "ASSURE-AI Team",
+    ].join("\n");
+
+    return {
+      type: "email_draft",
+      emailKind: "assessment_report_customer_email",
+      kind: "assessment_report_customer_email",
+      secureReportDelivery: true,
+      attachAssessmentPdf: false,
+      to: customerEmail,
+      To: customerEmail,
+      from: CUSTOMER_REQUEST_FROM_EMAIL,
+      From: CUSTOMER_REQUEST_FROM_EMAIL,
+      subject: secureDeliverySubject,
+      Subject: secureDeliverySubject,
+      body: secureDeliveryBody,
+      Body: secureDeliveryBody,
+      requestId,
+      customerName,
+      reportS3Path: finalReportS3Path,
+      assessmentReportS3Path: finalReportS3Path,
+      attachmentFileName: finalAttachmentFileName,
+      reportFileName: finalAttachmentFileName,
+      // Secure report delivery sends a tokenized link. Do not send the PDF as
+      // a direct attachment from the chat app.
+      attachments: [],
+    };
+  }, [artifact, formDraft, message, reportFileName, reportS3Path, requestId]);
+
+  // Keep the secure-link draft visible after refresh. The draft is derived
+  // from the persisted assessment report artifact, so it does not need a
+  // separate local-only "Generate email" message to survive reload.
+  const visibleSecureDraft = generatedDraft || buildSecureDeliveryDraft();
 
   const getPdfUrl = async () => {
     const token = await getAccessToken();
@@ -4554,74 +4638,13 @@ const AssessmentReportCard = ({
   };
 
   const handleGenerateEmail = async () => {
-    try {
-      setLoadingAction("email");
-      setStatusMsg("");
-      const token = await getAccessToken();
-      const res = await generateAssessmentCustomerEmail(
-        {
-          sessionId,
-          userId: user?.email,
-          requestId,
-        },
-        token
-      );
-
-      const draft = res?.emailDraft || null;
-      if (!draft) throw new Error("Email draft was not returned by backend.");
-
-      const finalReportS3Path =
-        reportS3Path ||
-        draft?.assessmentReportS3Path ||
-        draft?.reportS3Path ||
-        "";
-
-      const finalAttachmentFileName =
-        draft?.attachmentFileName ||
-        fileNameFromS3Path(finalReportS3Path, reportFileName);
-
-      const secureDeliverySubject = "Your ASSURE-AI Report is Ready";
-      const secureDeliveryBody = [
-        "Dear Customer,",
-        "",
-        "Your ASSURE-AI report is ready for secure download.",
-        "",
-        `Request ID: ${requestId || "Not provided"}`,
-        "",
-        "Open Secure Report Link",
-        "",
-        "For security, you may be asked to verify using OTP before downloading the report.",
-        "",
-        "Regards,",
-        "ASSURE-AI Team",
-      ].join("\n");
-
-      setGeneratedDraft({
-        ...draft,
-        type: "email_draft",
-        emailKind: "assessment_report_customer_email",
-        kind: "assessment_report_customer_email",
-        subject: secureDeliverySubject,
-        Subject: secureDeliverySubject,
-        body: secureDeliveryBody,
-        Body: secureDeliveryBody,
-        attachAssessmentPdf: false,
-        secureReportDelivery: true,
-        reportS3Path: finalReportS3Path,
-        assessmentReportS3Path: finalReportS3Path,
-        attachmentFileName: finalAttachmentFileName,
-        // Keep the report path for the secure-link API, but do not render this
-        // as a direct email attachment because the customer receives an OTP
-        // protected secure link instead.
-        attachments: [],
-      });
-      setStatusMsg("Secure report delivery email generated. Sending will create the secure link and OTP flow.");
-    } catch (e) {
-      console.error("Generate assessment customer email failed:", e);
-      setStatusMsg(e?.message || "Generate email failed");
-    } finally {
-      setLoadingAction("");
-    }
+    // Do not call /assessment/email/generate here. That backend route can
+    // create another report package/chat artifact every time it is clicked.
+    // For secure delivery, the email draft is deterministic and the real
+    // tokenized link is generated by Report Delivery Lambda only when the
+    // engineer clicks "Send Secure Link".
+    setGeneratedDraft(buildSecureDeliveryDraft());
+    setStatusMsg("Secure report delivery email ready. Click Send Secure Link to create the token and OTP flow.");
   };
 
   return (
@@ -4663,7 +4686,7 @@ const AssessmentReportCard = ({
               {loadingAction === "download" ? "Downloading..." : "Download PDF"}
             </button>
             <button type="button" className="assessmentPdfBtn assessmentPdfBtnPrimary" disabled={!reportS3Path || loadingAction === "email"} onClick={handleGenerateEmail}>
-              {loadingAction === "email" ? "Generating..." : "Generate customer email"}
+              {loadingAction === "email" ? "Preparing..." : "Show customer email"}
             </button>
           </div>
         </div>
@@ -4682,10 +4705,10 @@ const AssessmentReportCard = ({
         </details>
       ) : null}
 
-      {generatedDraft ? (
+      {visibleSecureDraft ? (
         <div className="assessmentPdfDraftWide">
           <EmailDraftCard
-            draft={generatedDraft}
+            draft={visibleSecureDraft}
             onSaveDraft={onSaveDraft}
             onSendEmail={onSendEmail}
             onPreviewAttachment={handlePreviewPdf}
@@ -10360,21 +10383,42 @@ Next step: Waiting for the customer response. Once the reply is received, review
     ].includes(emailReviewAssessmentStatus);
   }, [emailReviewAssessmentStatus]);
 
+  const hasAssessmentReportInMessages = useMemo(
+    () => normalizedMessages.some((message) => isAssessmentReportMessage(message)),
+    [normalizedMessages]
+  );
+
+  const isAssessmentReportStageReached = useMemo(() => {
+    return [
+      "ASSESSMENT-COMPLETED",
+      "REPORT-GENERATED",
+      "REPORT-DELIVERY",
+      "RESULTS-REVIEW",
+      "RESULTS-APPROVED",
+      "RESULTS-SUBMITTED",
+      "REQUEST-CLOSED",
+    ].includes(emailReviewAssessmentStatus);
+  }, [emailReviewAssessmentStatus]);
+
   const canShowEmailReviewActionCard = useMemo(() => {
     // Request Monitoring & Status should only show the dashboard/status view.
     // Supplier task sessions are separate from customer request review.
     if (isRequestMonitoringSession) return false;
     if (isActiveSupplierTaskSession) return false;
 
-    // Once an email-review card exists, keep it visible as request history.
-    // REQUEST-CONFIRMED means the customer reply was accepted; it does NOT mean
-    // assessment was already submitted. After submission, the same card stays
-    // visible with a disabled "Assessment Triggered" button.
+    // Once the assessment report exists, the review action is complete.
+    // Do not render this card at the bottom after report/email generation.
+    if (hasAssessmentReportInMessages || isAssessmentReportStageReached) {
+      return false;
+    }
+
     return hasEmailReviewSignal(normalizedMessages);
   }, [
     normalizedMessages,
     isActiveSupplierTaskSession,
     isRequestMonitoringSession,
+    hasAssessmentReportInMessages,
+    isAssessmentReportStageReached,
   ]);
 
   const renderFormMessageRow = (key) => (
@@ -10496,6 +10540,56 @@ Next step: Waiting for the customer response. Once the reply is received, review
             )}
 
             {normalizedMessages.map((m, index) => {
+              const currentAssessmentReport = getAssessmentReportArtifact(m);
+              if (currentAssessmentReport) {
+                const currentReportRequestId = String(
+                  currentAssessmentReport?.requestId ||
+                    currentAssessmentReport?.RequestId ||
+                    extractRequestIdFromSessionId(getActiveSessionId()) ||
+                    ""
+                ).trim();
+
+                const currentReportPath = String(
+                  currentAssessmentReport?.assessmentReportS3Path ||
+                    currentAssessmentReport?.AssessmentReportS3Path ||
+                    currentAssessmentReport?.reportS3Path ||
+                    ""
+                ).trim();
+
+                const hasNewerReportForSameRequest = normalizedMessages
+                  .slice(index + 1)
+                  .some((nextMessage) => {
+                    const nextReport = getAssessmentReportArtifact(nextMessage);
+                    if (!nextReport) return false;
+
+                    const nextRequestId = String(
+                      nextReport?.requestId ||
+                        nextReport?.RequestId ||
+                        extractRequestIdFromSessionId(getActiveSessionId()) ||
+                        ""
+                    ).trim();
+
+                    const nextPath = String(
+                      nextReport?.assessmentReportS3Path ||
+                        nextReport?.AssessmentReportS3Path ||
+                        nextReport?.reportS3Path ||
+                        ""
+                    ).trim();
+
+                    if (currentReportRequestId && nextRequestId) {
+                      return currentReportRequestId === nextRequestId;
+                    }
+
+                    if (currentReportPath && nextPath) {
+                      return currentReportPath === nextPath;
+                    }
+
+                    return false;
+                  });
+
+                if (hasNewerReportForSameRequest) return null;
+              }
+
               if (isRequestMonitoringSession) {
                 const artifactType = String(m?.artifact?.type || "").toLowerCase();
                 const textLower = String(extractMessageText(m) || m?.text || "").toLowerCase();
@@ -10564,6 +10658,7 @@ Next step: Waiting for the customer response. Once the reply is received, review
                         sessionAssessmentMarkdown={activeSessionAssessmentMarkdown}
                         user={user}
                         sessionId={getActiveSessionId()}
+                        formDraft={formDraft}
                         onSaveDraft={handleSaveEmailDraft}
                         onSendEmail={handleSendEmailDraft}
                       />
