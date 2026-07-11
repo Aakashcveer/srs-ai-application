@@ -10376,21 +10376,6 @@ Next step: Waiting for the customer response. Once the reply is received, review
       "ASSESSMENT-TRIGGERED",
       "ASSESSMENT-INPROGRESS",
       "ASSESSMENT-COMPLETED",
-      "RESULTS-REVIEW",
-      "RESULTS-APPROVED",
-      "RESULTS-SUBMITTED",
-      "REQUEST-CLOSED",
-    ].includes(emailReviewAssessmentStatus);
-  }, [emailReviewAssessmentStatus]);
-
-  const hasAssessmentReportInMessages = useMemo(
-    () => normalizedMessages.some((message) => isAssessmentReportMessage(message)),
-    [normalizedMessages]
-  );
-
-  const isAssessmentReportStageReached = useMemo(() => {
-    return [
-      "ASSESSMENT-COMPLETED",
       "REPORT-GENERATED",
       "REPORT-DELIVERY",
       "RESULTS-REVIEW",
@@ -10400,25 +10385,47 @@ Next step: Waiting for the customer response. Once the reply is received, review
     ].includes(emailReviewAssessmentStatus);
   }, [emailReviewAssessmentStatus]);
 
+  const emailReviewActionMessageIndex = useMemo(() => {
+    const list = Array.isArray(normalizedMessages) ? normalizedMessages : [];
+
+    for (let i = list.length - 1; i >= 0; i -= 1) {
+      const message = list[i] || {};
+      const artifact = message?.artifact || {};
+      const text = String(extractMessageText(message) || message?.text || "")
+        .trim()
+        .toLowerCase();
+
+      const isEmailReviewSource =
+        artifact?.type === "email_review_task" ||
+        artifact?.AskType === "EMAIL REVIEW" ||
+        message?.AskType === "EMAIL REVIEW" ||
+        text.includes("customer_email_reply") ||
+        text.includes("customer email reply received") ||
+        text.includes("status moved to email-review") ||
+        text.includes("customer reply processed successfully") ||
+        text.includes("status moved to request-confirmed");
+
+      if (isEmailReviewSource) return i;
+    }
+
+    return -1;
+  }, [normalizedMessages]);
+
   const canShowEmailReviewActionCard = useMemo(() => {
     // Request Monitoring & Status should only show the dashboard/status view.
     // Supplier task sessions are separate from customer request review.
     if (isRequestMonitoringSession) return false;
     if (isActiveSupplierTaskSession) return false;
 
-    // Once the assessment report exists, the review action is complete.
-    // Do not render this card at the bottom after report/email generation.
-    if (hasAssessmentReportInMessages || isAssessmentReportStageReached) {
-      return false;
-    }
-
-    return hasEmailReviewSignal(normalizedMessages);
+    // Keep this step in the original workflow position even after report
+    // generation. It should not float at the bottom, but the assessment
+    // submitted step must remain visible in chronological history.
+    return hasEmailReviewSignal(normalizedMessages) && emailReviewActionMessageIndex >= 0;
   }, [
     normalizedMessages,
     isActiveSupplierTaskSession,
     isRequestMonitoringSession,
-    hasAssessmentReportInMessages,
-    isAssessmentReportStageReached,
+    emailReviewActionMessageIndex,
   ]);
 
   const renderFormMessageRow = (key) => (
@@ -10724,6 +10731,40 @@ Next step: Waiting for the customer response. Once the reply is received, review
                     )}
                     </div>
                   </div>
+
+                  {canShowEmailReviewActionCard &&
+                    index === emailReviewActionMessageIndex && (
+                      <div className="msg-row bot">
+                        <div className="msg-bubble">
+                          <EmailReviewActionCard
+                            replyInfo={emailReviewReplyInfo}
+                            requestId={extractRequestIdFromSessionId(getActiveSessionId())}
+                            assignedTo={user?.email || ""}
+                            onSubmitForAssessment={handleSubmitEmailReviewForAssessment}
+                            onRequestChanges={handleRequestChangesFromEmailReview}
+                            loading={submittingEmailReview}
+                            assessmentTriggered={isEmailReviewAssessmentTriggered}
+                            assessmentStatus={emailReviewAssessmentStatus}
+                          />
+                          {formatMessageTime(emailReviewActionTimestamp) && (
+                            <div
+                              className="message-time"
+                              title={new Intl.DateTimeFormat("en-IN", {
+                                day: "2-digit",
+                                month: "short",
+                                year: "numeric",
+                                hour: "2-digit",
+                                minute: "2-digit",
+                                hour12: true,
+                                timeZone: "Asia/Kolkata",
+                              }).format(parseMessageDate(emailReviewActionTimestamp))}
+                            >
+                              {formatMessageTime(emailReviewActionTimestamp)}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
                 </React.Fragment>
               );
             })}
@@ -10736,38 +10777,6 @@ Next step: Waiting for the customer response. Once the reply is received, review
               ? renderFormMessageRow("inline-form-end")
               : null}
 
-            {canShowEmailReviewActionCard && (
-              <div className="msg-row bot">
-                <div className="msg-bubble">
-                  <EmailReviewActionCard
-                    replyInfo={emailReviewReplyInfo}
-                    requestId={extractRequestIdFromSessionId(getActiveSessionId())}
-                    assignedTo={user?.email || ""}
-                    onSubmitForAssessment={handleSubmitEmailReviewForAssessment}
-                    onRequestChanges={handleRequestChangesFromEmailReview}
-                    loading={submittingEmailReview}
-                    assessmentTriggered={isEmailReviewAssessmentTriggered}
-                    assessmentStatus={emailReviewAssessmentStatus}
-                  />
-                  {formatMessageTime(emailReviewActionTimestamp) && (
-                    <div
-                      className="message-time"
-                      title={new Intl.DateTimeFormat("en-IN", {
-                        day: "2-digit",
-                        month: "short",
-                        year: "numeric",
-                        hour: "2-digit",
-                        minute: "2-digit",
-                        hour12: true,
-                        timeZone: "Asia/Kolkata",
-                      }).format(parseMessageDate(emailReviewActionTimestamp))}
-                    >
-                      {formatMessageTime(emailReviewActionTimestamp)}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
 
           </>
         )}
