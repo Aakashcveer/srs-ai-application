@@ -110,21 +110,36 @@ const scrollElementToTop = (element) => {
   }
 };
 
+const getChatScrollContainers = () => [
+  document.querySelector(".chatMessages"),
+  document.querySelector(".chat-messages"),
+  document.querySelector(".messagesContainer"),
+  document.querySelector(".chat-window"),
+  document.querySelector(".chatWindow"),
+  document.querySelector(".chat-main"),
+  document.querySelector(".chatMain"),
+  document.querySelector(".chat-window-shell"),
+  document.querySelector(".chatWindowShell"),
+  document.scrollingElement,
+  document.documentElement,
+  document.body,
+];
+
+const getChatSearchRoot = () => {
+  return (
+    document.querySelector(".chatMessages") ||
+    document.querySelector(".chat-messages") ||
+    document.querySelector(".messagesContainer") ||
+    document.querySelector(".chat-window") ||
+    document.querySelector(".chatWindow") ||
+    document.querySelector(".chat-main") ||
+    document.querySelector(".chatMain") ||
+    document.body
+  );
+};
+
 const scrollToPageTop = () => {
-  const scrollCandidates = [
-    document.querySelector(".chatMessages"),
-    document.querySelector(".chat-messages"),
-    document.querySelector(".messagesContainer"),
-    document.querySelector(".chat-window"),
-    document.querySelector(".chatWindow"),
-    document.querySelector(".chat-main"),
-    document.querySelector(".chatMain"),
-    document.querySelector(".chat-window-shell"),
-    document.querySelector(".chatWindowShell"),
-    document.scrollingElement,
-    document.documentElement,
-    document.body,
-  ];
+  const scrollCandidates = getChatScrollContainers();
 
   for (const element of scrollCandidates) {
     if (scrollElementToTop(element)) return true;
@@ -144,6 +159,112 @@ const findExactWorkflowTarget = (statusKey) => {
     document.querySelector(`[data-workflow-status="${statusKey}"]`) ||
     document.querySelector(`[data-status="${statusKey}"]`)
   );
+};
+
+const STATUS_TEXT_MATCHERS = {
+  "REQUEST-CREATE": [
+    "select customer name",
+    "i have prepared the customer request form",
+    "customer request form",
+  ],
+  "REQUEST-REVIEW": [
+    "email sent successfully",
+    "status moved to request-review",
+    "request-review",
+  ],
+  "EMAIL-REVIEW": [
+    "customer email reply received",
+    "status moved to email-review",
+    "email-review",
+    "customer reply requires review",
+  ],
+  "REQUEST-CONFIRMED": [
+    "customer reply processed successfully",
+    "status moved to request-confirmed",
+    "request-confirmed",
+  ],
+  "ASSESSMENT-TRIGGERED": [
+    "assessment triggered",
+    "assessment triggered ✓",
+    "submit for assessment",
+    "assessment submitted",
+    "status moved to assessment-triggered",
+  ],
+  "ASSESSMENT-INPROGRESS": [
+    "assessment-inprogress",
+    "assessment in progress",
+    "assessment process is running",
+  ],
+  "ASSESSMENT-COMPLETED": [
+    "assessment-completed",
+    "assessment completed",
+    "assessment report package ready",
+    "assessment output has been generated",
+  ],
+  "RESULTS-REVIEW": ["results-review", "results review"],
+  "RESULTS-APPROVED": ["results-approved", "results approved"],
+  "RESULTS-SUBMITTED": ["results-submitted", "results submitted"],
+  "REPORT-GENERATED": [
+    "report-generated",
+    "report generated",
+    "assessment report package ready",
+    "published pdf",
+  ],
+  "REPORT-DELIVERY": [
+    "report-delivery",
+    "report delivery",
+    "review secure report delivery email",
+    "secure report link sent",
+    "secure report link draft",
+  ],
+  "REQUEST-CLOSED": [
+    "request-closed",
+    "request closed",
+    "customer downloaded the secure assessment report",
+    "customer submitted feedback",
+    "request lifecycle is complete",
+  ],
+};
+
+const findWorkflowTargetByText = (statusKey) => {
+  const root = getChatSearchRoot();
+  if (!root) return null;
+
+  const matchers = STATUS_TEXT_MATCHERS[statusKey] || [];
+  if (!matchers.length) return null;
+
+  const candidates = Array.from(
+    root.querySelectorAll(
+      [
+        ".msg-row",
+        ".msg-bubble",
+        ".emailDraftShell",
+        ".emailSentConfirmationCard",
+        ".requestSummaryCard",
+        ".assessmentReportCard",
+        ".formCardPremium",
+        ".customer-request-inline-card",
+        ".markdown-body",
+      ].join(",")
+    )
+  );
+
+  const visibleCandidates = candidates.filter((element) => {
+    if (!element || !element.textContent) return false;
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  });
+
+  for (const matcher of matchers) {
+    const needle = String(matcher || "").toLowerCase();
+    const found = visibleCandidates.find((element) =>
+      String(element.textContent || "").toLowerCase().includes(needle)
+    );
+
+    if (found) return found;
+  }
+
+  return null;
 };
 
 const WorkflowFulfillmentBar = ({
@@ -183,6 +304,13 @@ const WorkflowFulfillmentBar = ({
 
     if (exactTarget) {
       scrollToElement(exactTarget);
+      return;
+    }
+
+    const textTarget = findWorkflowTargetByText(step.key);
+
+    if (textTarget) {
+      scrollToElement(textTarget, "center");
       return;
     }
 
