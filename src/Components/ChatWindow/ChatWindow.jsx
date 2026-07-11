@@ -861,6 +861,60 @@ const buildDisplayMessagesWithReportDeliveryAtEnd = (messages = []) => {
 };
 
 
+const getReportDeliveryDedupeKey = (message = {}) => {
+  const eventType = getReportDeliveryEventType(message);
+  if (!eventType) return "";
+
+  const artifact = message?.artifact || message?.Artifact || {};
+  const requestId = String(
+    message?.RequestId ||
+      message?.requestId ||
+      artifact?.RequestId ||
+      artifact?.requestId ||
+      ""
+  ).trim();
+
+  return `${requestId || "current-request"}::${eventType}`;
+};
+
+const dedupeReportDeliveryMessages = (messages = []) => {
+  const list = Array.isArray(messages) ? messages : [];
+  const latestByKey = new Map();
+
+  list.forEach((message, index) => {
+    if (!isReportDeliveryEventMessage(message)) return;
+
+    const key = getReportDeliveryDedupeKey(message);
+    if (!key) return;
+
+    const nextTime = getReportDeliverySortableTime(message, index);
+    const existing = latestByKey.get(key);
+
+    if (!existing || nextTime >= existing.time) {
+      latestByKey.set(key, {
+        message,
+        index,
+        time: nextTime,
+      });
+    }
+  });
+
+  return Array.from(latestByKey.values())
+    .sort((a, b) => {
+      if (a.time !== b.time) return a.time - b.time;
+
+      const aEvent = getReportDeliveryEventType(a.message);
+      const bEvent = getReportDeliveryEventType(b.message);
+      const aOrder = REPORT_DELIVERY_EVENT_ORDER[aEvent] || 99;
+      const bOrder = REPORT_DELIVERY_EVENT_ORDER[bEvent] || 99;
+      if (aOrder !== bOrder) return aOrder - bOrder;
+
+      return a.index - b.index;
+    })
+    .map((row) => row.message);
+};
+
+
 const isEmailSentConfirmationText = (text = "") => {
   const value = String(text || "").trim().toLowerCase();
   return (
@@ -7691,6 +7745,21 @@ const ChatWindow = ({
     [normalizedMessages]
   );
 
+  const normalVisibleMessages = useMemo(
+    () => visibleMessages.filter((message) => !isReportDeliveryEventMessage(message)),
+    [visibleMessages]
+  );
+
+  const reportDeliveryVisibleMessages = useMemo(
+    () => dedupeReportDeliveryMessages(visibleMessages),
+    [visibleMessages]
+  );
+
+  const timelineMessages = useMemo(
+    () => [...normalVisibleMessages, ...reportDeliveryVisibleMessages],
+    [normalVisibleMessages, reportDeliveryVisibleMessages]
+  );
+
   const activeSessionAssessmentMarkdown = useMemo(
     () => getAssessmentMarkdownFromSessionData(chat || {}),
     [chat]
@@ -7763,7 +7832,7 @@ const ChatWindow = ({
 
   const currentRequestStatus = useMemo(() => {
     const reportDeliveryStatus =
-      extractFinalReportDeliveryStatusFromMessages(normalizedMessages);
+      extractFinalReportDeliveryStatusFromMessages(reportDeliveryVisibleMessages);
 
     // Report delivery happens through the secure customer portal, so the
     // report_delivery_event messages must override the older CustomerRequestStore
@@ -7780,7 +7849,7 @@ const ChatWindow = ({
         ""
     );
   }, [
-    normalizedMessages,
+    reportDeliveryVisibleMessages,
     chat?.requestStatus,
     chat?.RequestStatus,
     chat?.requestMeta?.requestStatus,
@@ -7817,7 +7886,7 @@ const ChatWindow = ({
     const assigned = new Set();
     const anchorMap = {};
 
-    visibleMessages.forEach((message, index) => {
+    timelineMessages.forEach((message, index) => {
       const status = extractWorkflowStatusFromMessage(message);
       if (!status || assigned.has(status)) return;
 
@@ -7826,11 +7895,11 @@ const ChatWindow = ({
     });
 
     return anchorMap;
-  }, [visibleMessages]);
+  }, [timelineMessages]);
 
   useEffect(() => {
-    visibleMessageCountRef.current = visibleMessages.length;
-  }, [visibleMessages.length]);
+    visibleMessageCountRef.current = timelineMessages.length;
+  }, [timelineMessages.length]);
 
   const computedFormInsertIndex = useMemo(() => {
     if (!showForm || !formDraft) return null;
@@ -10734,7 +10803,7 @@ Next step: Waiting for the customer response. Once the reply is received, review
               </div>
             )}
 
-            {visibleMessages.map((m, index) => {
+            {timelineMessages.map((m, index) => {
               const currentAssessmentReport = getAssessmentReportArtifact(m);
               if (currentAssessmentReport) {
                 const currentReportRequestId = String(
@@ -10751,7 +10820,7 @@ Next step: Waiting for the customer response. Once the reply is received, review
                     ""
                 ).trim();
 
-                const hasNewerReportForSameRequest = visibleMessages
+                const hasNewerReportForSameRequest = timelineMessages
                   .slice(index + 1)
                   .some((nextMessage) => {
                     const nextReport = getAssessmentReportArtifact(nextMessage);
@@ -10816,7 +10885,7 @@ Next step: Waiting for the customer response. Once the reply is received, review
               const previousDateKey =
                 index > 0
                   ? getMessageDateKey(
-                      getMessageTimestamp(visibleMessages[index - 1])
+                      getMessageTimestamp(timelineMessages[index - 1])
                     )
                   : "";
               const showDateSeparator =
@@ -10957,11 +11026,11 @@ Next step: Waiting for the customer response. Once the reply is received, review
               );
             })}
 
-            {visibleMessages.length === 0 && shouldRenderFormAtEnd
+            {timelineMessages.length === 0 && shouldRenderFormAtEnd
               ? renderFormMessageRow("inline-form-empty-end")
               : null}
 
-            {visibleMessages.length > 0 && shouldRenderFormAtEnd
+            {timelineMessages.length > 0 && shouldRenderFormAtEnd
               ? renderFormMessageRow("inline-form-end")
               : null}
 
