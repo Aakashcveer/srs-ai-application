@@ -735,6 +735,14 @@ const getReportDeliveryMessageStatus = (message = {}) => {
   const artifact = message?.artifact || message?.Artifact || {};
   const eventType = getReportDeliveryEventType(message);
 
+  if (eventType === "REPORT_DOWNLOADED" || eventType === "REPORT_FEEDBACK_SUBMITTED") {
+    return "REQUEST-CLOSED";
+  }
+
+  if (eventType === "REPORT_LINK_SENT") {
+    return "REPORT-DELIVERY";
+  }
+
   const directStatus = normalizeWorkflowStatus(
     message?.RequestStatus ||
       message?.requestStatus ||
@@ -746,14 +754,6 @@ const getReportDeliveryMessageStatus = (message = {}) => {
       artifact?.WorkflowState ||
       ""
   );
-
-  if (eventType === "REPORT_DOWNLOADED" || eventType === "REPORT_FEEDBACK_SUBMITTED") {
-    return "REQUEST-CLOSED";
-  }
-
-  if (eventType === "REPORT_LINK_SENT") {
-    return "REPORT-DELIVERY";
-  }
 
   if (directStatus === "REQUEST-CLOSED" || directStatus === "REPORT-DELIVERY") {
     return directStatus;
@@ -778,9 +778,15 @@ const getReportDeliveryMessageStatus = (message = {}) => {
 const extractFinalReportDeliveryStatusFromMessages = (messages = []) => {
   const list = Array.isArray(messages) ? messages : [];
 
+  // Prefer final closed state if any customer portal event reached download/feedback.
   for (let i = list.length - 1; i >= 0; i -= 1) {
     const status = getReportDeliveryMessageStatus(list[i]);
-    if (status) return status;
+    if (status === "REQUEST-CLOSED") return "REQUEST-CLOSED";
+  }
+
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    const status = getReportDeliveryMessageStatus(list[i]);
+    if (status === "REPORT-DELIVERY") return "REPORT-DELIVERY";
   }
 
   return "";
@@ -836,22 +842,21 @@ const buildDisplayMessagesWithReportDeliveryAtEnd = (messages = []) => {
   if (!reportDeliveryMessages.length) return list;
 
   reportDeliveryMessages.sort((a, b) => {
+    const aTime = getReportDeliverySortableTime(a.message, a.index);
+    const bTime = getReportDeliverySortableTime(b.message, b.index);
+    if (aTime !== bTime) return aTime - bTime;
+
     const aEvent = getReportDeliveryEventType(a.message);
     const bEvent = getReportDeliveryEventType(b.message);
     const aOrder = REPORT_DELIVERY_EVENT_ORDER[aEvent] || 99;
     const bOrder = REPORT_DELIVERY_EVENT_ORDER[bEvent] || 99;
-
-    const aTime = getReportDeliverySortableTime(a.message, a.index);
-    const bTime = getReportDeliverySortableTime(b.message, b.index);
-
-    if (aTime !== bTime) return aTime - bTime;
     if (aOrder !== bOrder) return aOrder - bOrder;
+
     return a.index - b.index;
   });
 
-  // Keep normal workflow/report/email content first, then external customer
-  // report-delivery events. This matches the real lifecycle:
-  // report package/email draft -> link sent -> customer download -> feedback.
+  // Force external customer portal events after the report card/email draft in UI.
+  // Backend rows are saved later but can be merged before fallback report cards.
   return [...normalMessages, ...reportDeliveryMessages.map((row) => row.message)];
 };
 
@@ -7681,7 +7686,7 @@ const ChatWindow = ({
     [cleanedMessages, getPreferredCustomerEmail]
   );
 
-  const displayMessages = useMemo(
+  const visibleMessages = useMemo(
     () => buildDisplayMessagesWithReportDeliveryAtEnd(normalizedMessages),
     [normalizedMessages]
   );
@@ -7713,7 +7718,7 @@ const ChatWindow = ({
     };
 
     return normalizeSupplierTask({ supplierTask: chatTaskLike });
-  }, [isActiveSupplierTaskSession, displayMessages, chat]);
+  }, [isActiveSupplierTaskSession, normalizedMessages, chat]);
 
   const activeSupplierTaskReviewKey = useMemo(() => {
     return String(
@@ -7749,21 +7754,20 @@ const ChatWindow = ({
   }, [isEngineerProfile, isActiveSupplierTaskSession, activeSupplierTaskReviewKey]);
 
   const hasVisibleCustomerFlowCard = useMemo(() => {
-    return displayMessages.some(
+    return normalizedMessages.some(
       (m) =>
         m?.flowType === "customer_request" ||
         isCustomerFlowQuestionText(extractMessageText(m))
     );
-  }, [displayMessages]);
+  }, [normalizedMessages]);
 
   const currentRequestStatus = useMemo(() => {
     const reportDeliveryStatus =
       extractFinalReportDeliveryStatusFromMessages(normalizedMessages);
 
-    // Report Delivery happens outside CustomerRequestStore through the secure
-    // customer portal. Until CustomerRequestStore is updated by backend, the
-    // report_delivery_event messages are the source of truth for the final
-    // REPORT-DELIVERY / REQUEST-CLOSED progress states.
+    // Report delivery happens through the secure customer portal, so the
+    // report_delivery_event messages must override the older CustomerRequestStore
+    // status for the progress timeline.
     if (reportDeliveryStatus) return reportDeliveryStatus;
 
     return normalizeWorkflowStatus(
@@ -7776,7 +7780,7 @@ const ChatWindow = ({
         ""
     );
   }, [
-    displayMessages,
+    normalizedMessages,
     chat?.requestStatus,
     chat?.RequestStatus,
     chat?.requestMeta?.requestStatus,
@@ -7790,10 +7794,10 @@ const ChatWindow = ({
     // Hide the right-side request fulfillment bar when supplier is logged into
     // a TSKS/TSKE task or when the loaded message is a supplier task card.
     if (isSupplierTaskSessionId(chat?.id)) return false;
-    if (hasLoadedSupplierTaskMessage(displayMessages)) return false;
+    if (hasLoadedSupplierTaskMessage(normalizedMessages)) return false;
 
     return Boolean(currentRequestStatus);
-  }, [chat?.id, currentRequestStatus, displayMessages]);
+  }, [chat?.id, currentRequestStatus, normalizedMessages]);
 
 
   const workflowSections = useMemo(() => {
@@ -7813,7 +7817,7 @@ const ChatWindow = ({
     const assigned = new Set();
     const anchorMap = {};
 
-    displayMessages.forEach((message, index) => {
+    visibleMessages.forEach((message, index) => {
       const status = extractWorkflowStatusFromMessage(message);
       if (!status || assigned.has(status)) return;
 
@@ -7822,18 +7826,18 @@ const ChatWindow = ({
     });
 
     return anchorMap;
-  }, [displayMessages]);
+  }, [visibleMessages]);
 
   useEffect(() => {
-    visibleMessageCountRef.current = displayMessages.length;
-  }, [displayMessages.length]);
+    visibleMessageCountRef.current = visibleMessages.length;
+  }, [visibleMessages.length]);
 
   const computedFormInsertIndex = useMemo(() => {
     if (!showForm || !formDraft) return null;
 
     let lastPreparedFormIndex = -1;
-    for (let i = 0; i < displayMessages.length; i += 1) {
-      const text = extractMessageText(displayMessages[i]);
+    for (let i = 0; i < normalizedMessages.length; i += 1) {
+      const text = extractMessageText(normalizedMessages[i]);
       if (isPreparedFormMessage(text)) {
         lastPreparedFormIndex = i;
       }
@@ -7843,22 +7847,22 @@ const ChatWindow = ({
       return lastPreparedFormIndex + 1;
     }
 
-    const firstReviewPromptIndex = displayMessages.findIndex((m) =>
+    const firstReviewPromptIndex = normalizedMessages.findIndex((m) =>
       isReviewPromptMessage(extractMessageText(m))
     );
     if (firstReviewPromptIndex >= 0) {
       return firstReviewPromptIndex;
     }
 
-    const firstEmailIndex = displayMessages.findIndex(
+    const firstEmailIndex = normalizedMessages.findIndex(
       (m) => !!m?.emailDraft
     );
     if (firstEmailIndex >= 0) {
       return firstEmailIndex;
     }
 
-    return formInsertIndex === null ? displayMessages.length : formInsertIndex;
-  }, [displayMessages, showForm, formDraft, formInsertIndex]);
+    return formInsertIndex === null ? normalizedMessages.length : formInsertIndex;
+  }, [normalizedMessages, showForm, formDraft, formInsertIndex]);
 
   const openFormInline = (nextDraft, options = {}) => {
     const { afterNextMessage = false } = options;
@@ -8321,7 +8325,7 @@ const ChatWindow = ({
     isActiveSupplierTaskSession,
     activeSupplierTaskReviewKey,
     user?.email,
-    displayMessages,
+    normalizedMessages,
     supplierTaskReviewMarkdownByTaskId,
     getActiveSessionId,
   ]);
@@ -10231,7 +10235,7 @@ Next step: Waiting for the customer response. Once the reply is received, review
       return;
     }
 
-    const replyInfo = extractCustomerEmailReplyFromMessages(displayMessages);
+    const replyInfo = extractCustomerEmailReplyFromMessages(normalizedMessages);
     const emailSubject = replyInfo.subject || "Customer email reply";
     const emailBody = replyInfo.body || "Customer requested changes before assessment.";
 
@@ -10490,10 +10494,10 @@ Next step: Waiting for the customer response. Once the reply is received, review
     !showForm &&
     !hasActiveCustomerFlow &&
     !hasVisibleCustomerFlowCard &&
-    displayMessages.length === 0;
+    normalizedMessages.length === 0;
 
   const supplierTaskFallbackMessage = useMemo(() => {
-    if (!isActiveSupplierTaskSession || displayMessages.length > 0) return null;
+    if (!isActiveSupplierTaskSession || normalizedMessages.length > 0) return null;
 
     const chatTaskLike = {
       ...(chat || {}),
@@ -10515,12 +10519,12 @@ Next step: Waiting for the customer response. Once the reply is received, review
   const canShowProcessReplyButton = false;
 
   const emailReviewReplyInfo = useMemo(
-    () => extractCustomerEmailReplyFromMessages(displayMessages),
-    [displayMessages]
+    () => extractCustomerEmailReplyFromMessages(normalizedMessages),
+    [normalizedMessages]
   );
 
   const emailReviewActionTimestamp = useMemo(() => {
-    const list = Array.isArray(displayMessages) ? displayMessages : [];
+    const list = Array.isArray(normalizedMessages) ? normalizedMessages : [];
 
     for (let i = list.length - 1; i >= 0; i -= 1) {
       const message = list[i] || {};
@@ -10544,7 +10548,7 @@ Next step: Waiting for the customer response. Once the reply is received, review
     }
 
     return "";
-  }, [displayMessages]);
+  }, [normalizedMessages]);
 
   const emailReviewAssessmentStatus = useMemo(() => {
     // Prefer the immediate local response after a successful submit so the
@@ -10570,7 +10574,7 @@ Next step: Waiting for the customer response. Once the reply is received, review
   }, [emailReviewAssessmentStatus]);
 
   const emailReviewActionMessageIndex = useMemo(() => {
-    const list = Array.isArray(displayMessages) ? displayMessages : [];
+    const list = Array.isArray(normalizedMessages) ? normalizedMessages : [];
 
     for (let i = list.length - 1; i >= 0; i -= 1) {
       const message = list[i] || {};
@@ -10604,9 +10608,9 @@ Next step: Waiting for the customer response. Once the reply is received, review
     // Keep this step in the original workflow position even after report
     // generation. It should not float at the bottom, but the assessment
     // submitted step must remain visible in chronological history.
-    return hasEmailReviewSignal(displayMessages) && emailReviewActionMessageIndex >= 0;
+    return hasEmailReviewSignal(normalizedMessages) && emailReviewActionMessageIndex >= 0;
   }, [
-    displayMessages,
+    normalizedMessages,
     isActiveSupplierTaskSession,
     isRequestMonitoringSession,
     emailReviewActionMessageIndex,
@@ -10649,7 +10653,7 @@ Next step: Waiting for the customer response. Once the reply is received, review
     showForm &&
     formDraft &&
     (computedFormInsertIndex === null ||
-      computedFormInsertIndex >= displayMessages.length);
+      computedFormInsertIndex >= normalizedMessages.length);
 
   return (
     <main className="chat-main chat-layout">
@@ -10730,7 +10734,7 @@ Next step: Waiting for the customer response. Once the reply is received, review
               </div>
             )}
 
-            {displayMessages.map((m, index) => {
+            {visibleMessages.map((m, index) => {
               const currentAssessmentReport = getAssessmentReportArtifact(m);
               if (currentAssessmentReport) {
                 const currentReportRequestId = String(
@@ -10747,7 +10751,7 @@ Next step: Waiting for the customer response. Once the reply is received, review
                     ""
                 ).trim();
 
-                const hasNewerReportForSameRequest = displayMessages
+                const hasNewerReportForSameRequest = visibleMessages
                   .slice(index + 1)
                   .some((nextMessage) => {
                     const nextReport = getAssessmentReportArtifact(nextMessage);
@@ -10812,7 +10816,7 @@ Next step: Waiting for the customer response. Once the reply is received, review
               const previousDateKey =
                 index > 0
                   ? getMessageDateKey(
-                      getMessageTimestamp(displayMessages[index - 1])
+                      getMessageTimestamp(visibleMessages[index - 1])
                     )
                   : "";
               const showDateSeparator =
@@ -10953,11 +10957,11 @@ Next step: Waiting for the customer response. Once the reply is received, review
               );
             })}
 
-            {displayMessages.length === 0 && shouldRenderFormAtEnd
+            {visibleMessages.length === 0 && shouldRenderFormAtEnd
               ? renderFormMessageRow("inline-form-empty-end")
               : null}
 
-            {displayMessages.length > 0 && shouldRenderFormAtEnd
+            {visibleMessages.length > 0 && shouldRenderFormAtEnd
               ? renderFormMessageRow("inline-form-end")
               : null}
 
