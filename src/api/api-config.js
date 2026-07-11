@@ -1820,7 +1820,24 @@ export const sendSecureReportLink = async (
   if (!customerEmail) throw new Error("customerEmail is required");
   if (!finalReportPath) throw new Error("reportS3Path is required");
 
+  if (!asString(sessionId)) {
+    console.warn(
+      "[api-config] sendSecureReportLink called without sessionId. Customer download will work, but chat close sync may be skipped."
+    );
+  }
+
+  const cleanSessionId = asString(sessionId);
+  const cleanUserId = asString(userId);
+
   const payload = {
+    sessionId: cleanSessionId,
+    SessionId: cleanSessionId,
+    chatSessionId: cleanSessionId,
+    ChatSessionId: cleanSessionId,
+    userId: cleanUserId,
+    UserId: cleanUserId,
+    chatUserId: cleanUserId,
+    ChatUserId: cleanUserId,
     requestId,
     RequestId: requestId,
     customerEmail,
@@ -1861,11 +1878,27 @@ export const sendSecureReportLink = async (
       },
       body: JSON.stringify({
         session: {
-          SessionId: sessionId,
-          UserId: userId,
+          SessionId: cleanSessionId,
+          sessionId: cleanSessionId,
+          ChatSessionId: cleanSessionId,
+          chatSessionId: cleanSessionId,
+          UserId: cleanUserId,
+          userId: cleanUserId,
+          ChatUserId: cleanUserId,
+          chatUserId: cleanUserId,
           ...payload,
         },
         payload,
+        // Keep these fields at root for the current Report Delivery Lambda.
+        // They are dynamic values from the active request, not hardcoded.
+        sessionId: cleanSessionId,
+        SessionId: cleanSessionId,
+        chatSessionId: cleanSessionId,
+        ChatSessionId: cleanSessionId,
+        userId: cleanUserId,
+        UserId: cleanUserId,
+        chatUserId: cleanUserId,
+        ChatUserId: cleanUserId,
         ...payload,
       }),
       signal: controller.signal,

@@ -4572,6 +4572,10 @@ const AssessmentReportCard = ({
       body: secureDeliveryBody,
       Body: secureDeliveryBody,
       requestId,
+      sessionId,
+      SessionId: sessionId,
+      userId: user?.email || "",
+      UserId: user?.email || "",
       customerName,
       reportS3Path: finalReportS3Path,
       assessmentReportS3Path: finalReportS3Path,
@@ -9512,8 +9516,14 @@ const ChatWindow = ({
 
         const res = await sendSecureReportLink(
           {
-            sessionId: workingSessionId,
-            userId: user?.email,
+            sessionId:
+              lockedDraft?.sessionId ||
+              lockedDraft?.SessionId ||
+              workingSessionId,
+            userId:
+              lockedDraft?.userId ||
+              lockedDraft?.UserId ||
+              user?.email,
             requestId,
             customerEmail: to,
             customerName:
@@ -9542,7 +9552,7 @@ const ChatWindow = ({
 
         const emailStatus =
           getWorkflowStatusFromApiResponse(res) ||
-          normalizeWorkflowStatus("REPORT-DELIVERY");
+          normalizeWorkflowStatus(res?.workflowState || res?.status || "REPORT-DELIVERY");
 
         if (emailStatus) {
           setCurrentRequestStatusOverride(emailStatus);
@@ -9551,18 +9561,21 @@ const ChatWindow = ({
         addMessage({
           sender: "bot",
           role: "assistant",
-          text:
-            res?.reply ||
-            res?.message ||
-            `✅ Secure report link sent successfully to ${to}. Customer must verify OTP before viewing or downloading the report.`,
+          text: `✅ Secure report link sent successfully to ${to}. Status moved to ${emailStatus || "REPORT-DELIVERY"}. Customer must verify OTP before viewing or downloading the report.`,
           RequestStatus: emailStatus,
           requestStatus: emailStatus,
           workflowState: emailStatus,
           artifact: {
             type: "report_delivery_link_sent",
+            eventType: "REPORT_LINK_SENT",
             requestId,
+            sessionId: workingSessionId,
+            SessionId: workingSessionId,
+            userId: user?.email || "",
+            UserId: user?.email || "",
             customerEmail: to,
             reportS3Path: secureReportS3Path,
+            assessmentReportS3Path: secureReportS3Path,
             reportFileName: secureReportFileName,
             response: res,
             RequestStatus: emailStatus,
@@ -9593,6 +9606,7 @@ const ChatWindow = ({
         await refreshSidebar?.();
         window.setTimeout(() => refreshActiveRequestStatus(), 2500);
         window.setTimeout(() => refreshActiveRequestStatus(), 6000);
+        window.setTimeout(() => refreshActiveRequestStatus(), 12000);
         return;
       }
 
