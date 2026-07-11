@@ -7700,7 +7700,7 @@ const ChatWindow = ({
   const reportDeliveryVisibleMessages = useMemo(() => {
     const latestByKey = new Map();
 
-    timelineMessages.forEach((message, index) => {
+    visibleMessages.forEach((message, index) => {
       if (!isReportDeliveryEventMessage(message)) return;
 
       const eventType = getReportDeliveryEventType(message);
