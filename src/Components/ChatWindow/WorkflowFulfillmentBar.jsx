@@ -53,6 +53,16 @@ const WORKFLOW_STEPS = [
     description: "Results have been submitted.",
   },
   {
+    key: "REPORT-GENERATED",
+    label: "Report Generated",
+    description: "Assessment report has been generated.",
+  },
+  {
+    key: "REPORT-DELIVERY",
+    label: "Report Delivery",
+    description: "Secure report link has been sent to the customer.",
+  },
+  {
     key: "REQUEST-CLOSED",
     label: "Request Closed",
     description: "Request lifecycle is complete.",
@@ -141,7 +151,6 @@ const WorkflowFulfillmentBar = ({
   workflowSections = {},
   onStepClick,
 }) => {
-  // requestStatus is expected to come directly from backend request metadata.
   const currentStatus = normalizeStatus(requestStatus);
 
   const currentIndex = useMemo(() => {
