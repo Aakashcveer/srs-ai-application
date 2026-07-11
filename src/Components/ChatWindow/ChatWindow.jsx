@@ -1857,7 +1857,119 @@ const getEmailReviewDedupeKey = (m = {}) => {
 
 const isRawCustomerEmailReplyMessage = (m = {}) => {
   const text = String(extractMessageText(m) || m?.text || "").trim();
-  return /^CUSTOMER_EMAIL_REPLY\b/i.test(text);
+  return /^CUSTOMER(?:_EMAIL)?_REPLY\b/i.test(text);
+};
+
+const parseRawCustomerReplyMessage = (m = {}) => {
+  const raw = String(extractMessageText(m) || m?.text || "").trim();
+  const cleaned = raw.replace(/^CUSTOMER(?:_EMAIL)?_REPLY\s*/i, "").trim();
+
+  const subject =
+    cleaned.match(/Subject:\s*([^\n]+)/i)?.[1]?.trim() ||
+    m?.artifact?.replySubject ||
+    m?.CustomerReplySubject ||
+    "Customer reply";
+
+  const from =
+    cleaned.match(/From:\s*([^\n]+)/i)?.[1]?.trim() ||
+    m?.artifact?.replyFrom ||
+    m?.CustomerReplyFrom ||
+    "";
+
+  let body =
+    cleaned.match(/Reply:\s*([\s\S]*?)(?:\n\s*Status moved|\n\s*Action required|$)/i)?.[1]?.trim() ||
+    cleaned
+      .replace(/Subject:\s*[^\n]+/i, "")
+      .replace(/From:\s*[^\n]+/i, "")
+      .replace(/Reply:\s*/i, "")
+      .replace(/Status moved[\s\S]*$/i, "")
+      .replace(/Action required[\s\S]*$/i, "")
+      .trim();
+
+  return {
+    from,
+    subject,
+    body,
+  };
+};
+
+
+const CustomerReplyReceivedCard = ({ message = {} }) => {
+  const parsed = parseRawCustomerReplyMessage(message);
+
+  return (
+    <div
+      style={{
+        borderRadius: "18px",
+        border: "1px solid rgba(99, 102, 241, 0.20)",
+        background: "linear-gradient(180deg, #ffffff, #f8fafc)",
+        padding: "16px",
+      }}
+    >
+      <div
+        style={{
+          fontSize: "11px",
+          fontWeight: 850,
+          letterSpacing: "0.12em",
+          textTransform: "uppercase",
+          color: "#64748b",
+          marginBottom: "8px",
+        }}
+      >
+        Customer Reply Received
+      </div>
+
+      <div
+        style={{
+          fontSize: "16px",
+          fontWeight: 850,
+          color: "#0f172a",
+          marginBottom: "10px",
+        }}
+      >
+        {parsed.subject || "Customer reply"}
+      </div>
+
+      {parsed.from ? (
+        <div
+          style={{
+            fontSize: "13px",
+            color: "#475569",
+            marginBottom: "10px",
+          }}
+        >
+          From: <strong>{parsed.from}</strong>
+        </div>
+      ) : null}
+
+      {parsed.body ? (
+        <div
+          style={{
+            borderRadius: "14px",
+            background: "#f8fafc",
+            border: "1px solid #e2e8f0",
+            padding: "12px",
+            color: "#1e293b",
+            fontSize: "14px",
+            lineHeight: 1.55,
+            whiteSpace: "pre-wrap",
+          }}
+        >
+          {parsed.body}
+        </div>
+      ) : null}
+
+      <div
+        style={{
+          marginTop: "10px",
+          fontSize: "12px",
+          color: "#64748b",
+        }}
+      >
+        Review this reply, then use the assessment action card below.
+      </div>
+    </div>
+  );
 };
 
 const EmailReviewActionCard = ({
@@ -10966,7 +11078,7 @@ Next step: Waiting for the customer response. Once the reply is received, review
 
                   <div
                     id={workflowAnchorId || undefined}
-                    className={`msg-row ${m.sender}`}
+                    className={`msg-row ${isRawCustomerEmailReplyMessage(m) ? "bot" : m.sender}`}
                   >
                     <div className="msg-bubble">
                     {m.flowType === "customer_request" ? (
@@ -11011,6 +11123,8 @@ Next step: Waiting for the customer response. Once the reply is received, review
                         user={user}
                         sessionId={getActiveSessionId()}
                       />
+                    ) : isRawCustomerEmailReplyMessage(m) ? (
+                      <CustomerReplyReceivedCard message={m} />
                     ) : (
                       <MarkdownRenderer
                         text={
@@ -11026,6 +11140,7 @@ Next step: Waiting for the customer response. Once the reply is received, review
                       !m.flowType &&
                       !hasSupplierUploadedDocsMarkdown(m.text || "", m.artifact) &&
                       !isAssessmentReportMessage(m) &&
+                      !isRawCustomerEmailReplyMessage(m) &&
                       !isPreparedFormMessage(m.text || "") &&
                       !isCustomerFlowQuestionText(m.text || "") &&
                       renderArtifact(m)}
