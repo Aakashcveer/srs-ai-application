@@ -705,7 +705,7 @@ const REPORT_DELIVERY_EVENT_ORDER = {
 
 const getReportDeliveryEventType = (message = {}) => {
   const artifact = message?.artifact || message?.Artifact || {};
-  return String(
+  const explicitType = String(
     message?.EventType ||
       message?.eventType ||
       artifact?.EventType ||
@@ -714,6 +714,41 @@ const getReportDeliveryEventType = (message = {}) => {
   )
     .trim()
     .toUpperCase();
+
+  if (explicitType) return explicitType;
+
+  const text = [
+    extractMessageText(message),
+    message?.text,
+    typeof message?.content === "string" ? message.content : "",
+    artifact ? safeJsonStringify(artifact) : "",
+  ]
+    .filter(Boolean)
+    .join("\n")
+    .toLowerCase();
+
+  if (
+    text.includes("customer submitted feedback for the secure report") ||
+    text.includes("request remains request-closed")
+  ) {
+    return "REPORT_FEEDBACK_SUBMITTED";
+  }
+
+  if (
+    text.includes("customer downloaded the secure assessment report") ||
+    text.includes("status moved to request-closed")
+  ) {
+    return "REPORT_DOWNLOADED";
+  }
+
+  if (
+    text.includes("secure report link sent") ||
+    text.includes("status moved to report-delivery")
+  ) {
+    return "REPORT_LINK_SENT";
+  }
+
+  return "";
 };
 
 const isReportDeliveryEventMessage = (message = {}) => {
@@ -723,12 +758,31 @@ const isReportDeliveryEventMessage = (message = {}) => {
     .toLowerCase();
   const eventType = getReportDeliveryEventType(message);
 
+  const text = [
+    extractMessageText(message),
+    message?.text,
+    typeof message?.content === "string" ? message.content : "",
+    artifact ? safeJsonStringify(artifact) : "",
+  ]
+    .filter(Boolean)
+    .join("\n")
+    .toLowerCase();
+
+  const looksLikeReportDeliveryText =
+    text.includes("secure report link sent") ||
+    text.includes("customer downloaded the secure assessment report") ||
+    text.includes("customer submitted feedback for the secure report") ||
+    text.includes("status moved to report-delivery") ||
+    text.includes("status moved to request-closed") ||
+    text.includes("request remains request-closed");
+
   return (
     artifactType === "report_delivery_event" ||
     artifactType === "report_delivery_link_sent" ||
     eventType === "REPORT_LINK_SENT" ||
     eventType === "REPORT_DOWNLOADED" ||
-    eventType === "REPORT_FEEDBACK_SUBMITTED"
+    eventType === "REPORT_FEEDBACK_SUBMITTED" ||
+    looksLikeReportDeliveryText
   );
 };
 
@@ -7820,7 +7874,9 @@ const ChatWindow = ({
 
   const currentRequestStatus = useMemo(() => {
     const reportDeliveryStatus =
-      extractFinalReportDeliveryStatusFromMessages(reportDeliveryVisibleMessages);
+      extractFinalReportDeliveryStatusFromMessages(reportDeliveryVisibleMessages) ||
+      extractFinalReportDeliveryStatusFromMessages(visibleMessages) ||
+      extractFinalReportDeliveryStatusFromMessages(normalizedMessages);
 
     // Report delivery happens through the secure customer portal, so the
     // report_delivery_event messages must override the older CustomerRequestStore
@@ -7839,6 +7895,8 @@ const ChatWindow = ({
     );
   }, [
     reportDeliveryVisibleMessages,
+    visibleMessages,
+    normalizedMessages,
     currentRequestStatusOverride,
     chat?.requestStatus,
     chat?.RequestStatus,
