@@ -725,6 +725,7 @@ const isReportDeliveryEventMessage = (message = {}) => {
 
   return (
     artifactType === "report_delivery_event" ||
+    artifactType === "report_delivery_link_sent" ||
     eventType === "REPORT_LINK_SENT" ||
     eventType === "REPORT_DOWNLOADED" ||
     eventType === "REPORT_FEEDBACK_SUBMITTED"
@@ -858,60 +859,6 @@ const buildDisplayMessagesWithReportDeliveryAtEnd = (messages = []) => {
   // Force external customer portal events after the report card/email draft in UI.
   // Backend rows are saved later but can be merged before fallback report cards.
   return [...normalMessages, ...reportDeliveryMessages.map((row) => row.message)];
-};
-
-
-const getReportDeliveryDedupeKey = (message = {}) => {
-  const eventType = getReportDeliveryEventType(message);
-  if (!eventType) return "";
-
-  const artifact = message?.artifact || message?.Artifact || {};
-  const requestId = String(
-    message?.RequestId ||
-      message?.requestId ||
-      artifact?.RequestId ||
-      artifact?.requestId ||
-      ""
-  ).trim();
-
-  return `${requestId || "current-request"}::${eventType}`;
-};
-
-const dedupeReportDeliveryMessages = (messages = []) => {
-  const list = Array.isArray(messages) ? messages : [];
-  const latestByKey = new Map();
-
-  list.forEach((message, index) => {
-    if (!isReportDeliveryEventMessage(message)) return;
-
-    const key = getReportDeliveryDedupeKey(message);
-    if (!key) return;
-
-    const nextTime = getReportDeliverySortableTime(message, index);
-    const existing = latestByKey.get(key);
-
-    if (!existing || nextTime >= existing.time) {
-      latestByKey.set(key, {
-        message,
-        index,
-        time: nextTime,
-      });
-    }
-  });
-
-  return Array.from(latestByKey.values())
-    .sort((a, b) => {
-      if (a.time !== b.time) return a.time - b.time;
-
-      const aEvent = getReportDeliveryEventType(a.message);
-      const bEvent = getReportDeliveryEventType(b.message);
-      const aOrder = REPORT_DELIVERY_EVENT_ORDER[aEvent] || 99;
-      const bOrder = REPORT_DELIVERY_EVENT_ORDER[bEvent] || 99;
-      if (aOrder !== bOrder) return aOrder - bOrder;
-
-      return a.index - b.index;
-    })
-    .map((row) => row.message);
 };
 
 
@@ -7750,10 +7697,51 @@ const ChatWindow = ({
     [visibleMessages]
   );
 
-  const reportDeliveryVisibleMessages = useMemo(
-    () => dedupeReportDeliveryMessages(visibleMessages),
-    [visibleMessages]
-  );
+  const reportDeliveryVisibleMessages = useMemo(() => {
+    const latestByKey = new Map();
+
+    timelineMessages.forEach((message, index) => {
+      if (!isReportDeliveryEventMessage(message)) return;
+
+      const eventType = getReportDeliveryEventType(message);
+      if (!eventType) return;
+
+      const artifact = message?.artifact || message?.Artifact || {};
+      const requestId = String(
+        message?.RequestId ||
+          message?.requestId ||
+          artifact?.RequestId ||
+          artifact?.requestId ||
+          extractRequestIdFromSessionId(chat?.id || "")
+      ).trim();
+
+      const dedupeKey = `${requestId || "current-request"}::${eventType}`;
+      const eventTime = getReportDeliverySortableTime(message, index);
+      const existing = latestByKey.get(dedupeKey);
+
+      if (!existing || eventTime >= existing.eventTime) {
+        latestByKey.set(dedupeKey, {
+          message,
+          index,
+          eventTime,
+        });
+      }
+    });
+
+    return Array.from(latestByKey.values())
+      .sort((a, b) => {
+        if (a.eventTime !== b.eventTime) return a.eventTime - b.eventTime;
+
+        const aEvent = getReportDeliveryEventType(a.message);
+        const bEvent = getReportDeliveryEventType(b.message);
+        const aOrder = REPORT_DELIVERY_EVENT_ORDER[aEvent] || 99;
+        const bOrder = REPORT_DELIVERY_EVENT_ORDER[bEvent] || 99;
+
+        if (aOrder !== bOrder) return aOrder - bOrder;
+        return a.index - b.index;
+      })
+      .map((row) => row.message);
+  }, [visibleMessages, chat?.id]);
 
   const timelineMessages = useMemo(
     () => [...normalVisibleMessages, ...reportDeliveryVisibleMessages],
@@ -7840,7 +7828,8 @@ const ChatWindow = ({
     if (reportDeliveryStatus) return reportDeliveryStatus;
 
     return normalizeWorkflowStatus(
-      chat?.requestStatus ||
+      currentRequestStatusOverride ||
+        chat?.requestStatus ||
         chat?.RequestStatus ||
         chat?.requestMeta?.requestStatus ||
         chat?.requestMeta?.RequestStatus ||
@@ -7850,6 +7839,7 @@ const ChatWindow = ({
     );
   }, [
     reportDeliveryVisibleMessages,
+    currentRequestStatusOverride,
     chat?.requestStatus,
     chat?.RequestStatus,
     chat?.requestMeta?.requestStatus,
@@ -7886,7 +7876,7 @@ const ChatWindow = ({
     const assigned = new Set();
     const anchorMap = {};
 
-    timelineMessages.forEach((message, index) => {
+    visibleMessages.forEach((message, index) => {
       const status = extractWorkflowStatusFromMessage(message);
       if (!status || assigned.has(status)) return;
 
@@ -9802,16 +9792,27 @@ const ChatWindow = ({
         }
 
         addMessage({
+          id: `report-link-sent-${Date.now()}`,
           sender: "bot",
           role: "assistant",
+          timestamp: new Date().toISOString(),
           text: `✅ Secure report link sent successfully to ${to}. Status moved to ${emailStatus || "REPORT-DELIVERY"}. Customer must verify OTP before viewing or downloading the report.`,
+          EventType: "REPORT_LINK_SENT",
+          eventType: "REPORT_LINK_SENT",
+          RequestId: requestId,
+          requestId,
+          SessionId: workingSessionId,
+          sessionId: workingSessionId,
           RequestStatus: emailStatus,
           requestStatus: emailStatus,
           workflowState: emailStatus,
           artifact: {
             type: "report_delivery_link_sent",
+            artifactType: "report_delivery_link_sent",
             eventType: "REPORT_LINK_SENT",
+            EventType: "REPORT_LINK_SENT",
             requestId,
+            RequestId: requestId,
             sessionId: workingSessionId,
             SessionId: workingSessionId,
             userId: user?.email || "",
@@ -9845,11 +9846,12 @@ const ChatWindow = ({
           requestStatus: emailStatus,
         });
 
-        await refreshActiveRequestStatus();
+        // Keep the local REPORT-DELIVERY event visible immediately.
+        // The Report Delivery Lambda also writes the same event to chat history,
+        // so polling/refresh will keep it after backend sync.
         await refreshSidebar?.();
-        window.setTimeout(() => refreshActiveRequestStatus(), 2500);
-        window.setTimeout(() => refreshActiveRequestStatus(), 6000);
-        window.setTimeout(() => refreshActiveRequestStatus(), 12000);
+        window.setTimeout(() => refreshSidebar?.(), 2500);
+        window.setTimeout(() => refreshSidebar?.(), 6000);
         return;
       }
 
