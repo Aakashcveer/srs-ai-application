@@ -38,6 +38,7 @@ import {
   buildRequestConfirmationEmailMarkdown,
   presignAssessmentReportPdf,
   generateAssessmentCustomerEmail,
+  sendSecureReportLink,
   uploadSupplierTaskFile,
   submitSupplierTaskForReview,
   downloadSupplierTaskFile,
@@ -100,24 +101,6 @@ const getSelectedRegulationLabels = (detail = {}) => {
   );
 };
 
-
-const makeKcWorkflowRunId = () => {
-  const now = new Date();
-  const pad = (value, size = 2) => String(value).padStart(size, "0");
-
-  const datePart = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
-  const timePart = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-  const microPart = `${pad(now.getMilliseconds(), 3)}000`;
-
-  const randomPart =
-    typeof crypto !== "undefined" && crypto?.getRandomValues
-      ? Array.from(crypto.getRandomValues(new Uint8Array(4)))
-          .map((byte) => byte.toString(16).padStart(2, "0"))
-          .join("")
-      : Math.random().toString(16).slice(2, 10).padEnd(8, "0");
-
-  return `${datePart}#${timePart}#${microPart}#${randomPart.slice(0, 8)}`;
-};
 
 
 // Keep all customer-request email subjects locked to the active sidebar session.
@@ -408,6 +391,8 @@ const WORKFLOW_STATUS_ORDER = [
   "RESULTS-REVIEW",
   "RESULTS-APPROVED",
   "RESULTS-SUBMITTED",
+  "REPORT-GENERATED",
+  "REPORT-DELIVERY",
   "REQUEST-CLOSED",
 ];
 
@@ -1663,6 +1648,8 @@ const EmailReviewActionCard = ({
   onSubmitForAssessment,
   onRequestChanges,
   loading,
+  assessmentTriggered = false,
+  assessmentStatus = "",
 }) => {
   const bodyPreview = String(replyInfo?.body || "").trim();
   const displayRequestId =
@@ -1826,7 +1813,13 @@ const EmailReviewActionCard = ({
         </div>
 
         <div style={styles.badgeWrap}>
-          <span style={styles.dangerBadge}>Pending engineer action</span>
+          {assessmentTriggered ? (
+            <span style={styles.badge}>
+              {assessmentStatus || "Assessment Triggered"}
+            </span>
+          ) : (
+            <span style={styles.dangerBadge}>Pending engineer action</span>
+          )}
         </div>
       </div>
 
@@ -1865,9 +1858,13 @@ const EmailReviewActionCard = ({
 
       <div style={styles.footer}>
         <div>
-          <div style={styles.hintTitle}>Next step</div>
+          <div style={styles.hintTitle}>
+            {assessmentTriggered ? "Assessment submitted" : "Next step"}
+          </div>
           <div style={styles.hintText}>
-            Review the customer response. If accepted, submit for assessment. If the customer asks for a date, quantity, priority, or detail change, open the request for update and send a revised email.
+            {assessmentTriggered
+              ? "The request has been submitted to the FMD assessment workflow. This review card remains visible as part of the request history."
+              : "Review the customer response. If accepted, submit for assessment. If the customer asks for a date, quantity, priority, or detail change, open the request for update and send a revised email."}
           </div>
         </div>
 
@@ -1876,10 +1873,14 @@ const EmailReviewActionCard = ({
             type="button"
             className="formSaveBtn premiumFormSaveBtn"
             onClick={onSubmitForAssessment}
-            disabled={loading}
+            disabled={loading || assessmentTriggered}
             style={{ minWidth: "220px", minHeight: "48px" }}
           >
-            {loading ? "Submitting..." : "Submit for Assessment"}
+            {loading
+              ? "Submitting..."
+              : assessmentTriggered
+              ? "Assessment Triggered ✓"
+              : "Submit for Assessment"}
           </button>
         </div>
       </div>
@@ -4086,6 +4087,12 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail, onPreviewAttachment, 
 
   if (!draft || isEmptyEmailDraft(draft)) return null;
 
+  const isAssessmentReportDraft =
+    String(localDraft?.emailKind || localDraft?.kind || "").trim() ===
+      "assessment_report_customer_email" ||
+    Boolean(localDraft?.attachAssessmentPdf) ||
+    Boolean(localDraft?.reportS3Path || localDraft?.assessmentReportS3Path);
+
   const updateField = (key, value) => {
     if (key === "from") return;
     setLocalDraft((prev) => ({ ...prev, [key]: value }));
@@ -4131,6 +4138,8 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail, onPreviewAttachment, 
       setStatusMsg(
         isSupplier
           ? "✅ Supplier email sent successfully."
+          : isAssessmentReportDraft
+          ? "✅ Secure report link sent successfully."
           : "✅ Email sent. Waiting for customer response."
       );
     } catch (error) {
@@ -4175,11 +4184,17 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail, onPreviewAttachment, 
       <div className="emailDraftHeader">
         <div>
           <div className="emailDraftEyebrow">
-            {isSupplier ? "Supplier Email Draft" : "Customer Email Draft"}
+            {isSupplier
+              ? "Supplier Email Draft"
+              : isAssessmentReportDraft
+              ? "Secure Report Link Draft"
+              : "Customer Email Draft"}
           </div>
           <div className="emailDraftTitle">
             {isSupplier
               ? "Request FMD documents from supplier"
+              : isAssessmentReportDraft
+              ? "Review secure report delivery email"
               : "Review before sending"}
           </div>
           {isSupplier ? (
@@ -4219,7 +4234,11 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail, onPreviewAttachment, 
               flexShrink: 0,
             }}
           >
-            {isSupplier ? "Supplier Request" : "Customer Review"}
+            {isSupplier
+              ? "Supplier Request"
+              : isAssessmentReportDraft
+              ? "Secure Link"
+              : "Customer Review"}
           </span>
 
         </div>
@@ -4277,8 +4296,13 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail, onPreviewAttachment, 
             className="emailDraftTextarea"
             value={localDraft.body}
             onChange={(e) => updateField("body", e.target.value)}
-            rows={14}
+            rows={isAssessmentReportDraft ? 9 : 14}
             placeholder="Write email body..."
+            style={
+              isAssessmentReportDraft
+                ? { minHeight: "220px", maxHeight: "none", overflowY: "hidden" }
+                : undefined
+            }
           />
         ) : (
           <div
@@ -4301,7 +4325,7 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail, onPreviewAttachment, 
         )}
       </div>
 
-      {Array.isArray(localDraft.attachments) && localDraft.attachments.length > 0 ? (
+      {!isAssessmentReportDraft && Array.isArray(localDraft.attachments) && localDraft.attachments.length > 0 ? (
         <div className="emailAttachmentStrip">
           <div className="emailAttachmentStripLabel">Attachment</div>
           {localDraft.attachments.map((file, idx) => (
@@ -4331,7 +4355,7 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail, onPreviewAttachment, 
             </div>
           ))}
         </div>
-      ) : localDraft?.attachmentFileName ? (
+      ) : !isAssessmentReportDraft && localDraft?.attachmentFileName ? (
         <div className="emailAttachmentStrip">
           <div className="emailAttachmentStripLabel">Attachment</div>
           <div className="emailAttachmentRow">
@@ -4365,6 +4389,8 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail, onPreviewAttachment, 
             ? "Edit the draft and save your changes before sending."
             : isSupplier
             ? "Preview the supplier-facing FMD request email before sending."
+            : isAssessmentReportDraft
+            ? "This preview now matches the secure-link email template. The real button link is generated by Report Delivery when you send."
             : "Review the draft. Use “Edit Email” to change recipient, subject, or message before sending."}
         </div>
 
@@ -4435,6 +4461,8 @@ const EmailDraftCard = ({ draft, onSaveDraft, onSendEmail, onPreviewAttachment, 
               ? "Sending..."
               : isSupplier
               ? "Send to Supplier"
+              : isAssessmentReportDraft
+              ? "Send Secure Link"
               : "Send Email"}
           </button>
         </div>
@@ -4552,28 +4580,42 @@ const AssessmentReportCard = ({
         draft?.attachmentFileName ||
         fileNameFromS3Path(finalReportS3Path, reportFileName);
 
+      const secureDeliverySubject = "Your ASSURE-AI Report is Ready";
+      const secureDeliveryBody = [
+        "Dear Customer,",
+        "",
+        "Your ASSURE-AI report is ready for secure download.",
+        "",
+        `Request ID: ${requestId || "Not provided"}`,
+        "",
+        "Open Secure Report Link",
+        "",
+        "For security, you may be asked to verify using OTP before downloading the report.",
+        "",
+        "Regards,",
+        "ASSURE-AI Team",
+      ].join("\n");
+
       setGeneratedDraft({
         ...draft,
         type: "email_draft",
         emailKind: "assessment_report_customer_email",
         kind: "assessment_report_customer_email",
-        attachAssessmentPdf: true,
+        subject: secureDeliverySubject,
+        Subject: secureDeliverySubject,
+        body: secureDeliveryBody,
+        Body: secureDeliveryBody,
+        attachAssessmentPdf: false,
+        secureReportDelivery: true,
         reportS3Path: finalReportS3Path,
         assessmentReportS3Path: finalReportS3Path,
         attachmentFileName: finalAttachmentFileName,
-        attachments: finalReportS3Path
-          ? [
-              {
-                fileName: finalAttachmentFileName,
-                s3Path: finalReportS3Path,
-                reportS3Path: finalReportS3Path,
-                assessmentReportS3Path: finalReportS3Path,
-                type: "application/pdf",
-              },
-            ]
-          : [],
+        // Keep the report path for the secure-link API, but do not render this
+        // as a direct email attachment because the customer receives an OTP
+        // protected secure link instead.
+        attachments: [],
       });
-      setStatusMsg("Email draft generated with assessment PDF attachment.");
+      setStatusMsg("Secure report delivery email generated. Sending will create the secure link and OTP flow.");
     } catch (e) {
       console.error("Generate assessment customer email failed:", e);
       setStatusMsg(e?.message || "Generate email failed");
@@ -4591,7 +4633,7 @@ const AssessmentReportCard = ({
             <div className="assessmentPdfEyebrow">Assessment report</div>
             <div className="assessmentPdfTitle">Assessment report package ready</div>
             <div className="assessmentPdfSubtitle">
-              The final assessment PDF has been published and is ready for customer communication.
+              The final assessment PDF has been published and is ready for secure customer delivery.
             </div>
           </div>
           {reportStatus ? (
@@ -4611,7 +4653,7 @@ const AssessmentReportCard = ({
 
         <div className="assessmentPdfActionsRow">
           <div className="assessmentPdfHint">
-            Review or download the published PDF, then generate the customer email with this PDF attached.
+            Review or download the published PDF, then send the customer a secure report link with OTP verification.
           </div>
           <div className="assessmentPdfActions">
             <button type="button" className="assessmentPdfBtn assessmentPdfBtnGhost" disabled={!reportS3Path || loadingAction === "preview"} onClick={handlePreviewPdf}>
@@ -9420,6 +9462,117 @@ const ChatWindow = ({
 
       const token = await getAccessToken();
 
+      if (isAssessmentReportEmail && !isSupplierDraft) {
+        const attachmentReportPath = Array.isArray(lockedDraft?.attachments)
+          ? resolveEmailAttachmentReportPath(
+              lockedDraft.attachments.find((file) =>
+                resolveEmailAttachmentReportPath(file)
+              ) || {}
+            )
+          : "";
+
+        const secureReportS3Path =
+          String(
+            lockedDraft?.reportS3Path ||
+              lockedDraft?.assessmentReportS3Path ||
+              attachmentReportPath ||
+              ""
+          ).trim();
+
+        if (!secureReportS3Path) {
+          throw new Error("Assessment report PDF path is missing for secure delivery.");
+        }
+
+        const secureReportFileName =
+          lockedDraft?.attachmentFileName ||
+          fileNameFromS3Path(secureReportS3Path, "assessment-report.pdf");
+
+        const res = await sendSecureReportLink(
+          {
+            sessionId: workingSessionId,
+            userId: user?.email,
+            requestId,
+            customerEmail: to,
+            customerName:
+              lockedDraft?.customerName ||
+              formDraft?.CustomerName ||
+              "",
+            customerPartName:
+              lockedDraft?.customerPartName ||
+              formDraft?.CustomerPartName ||
+              extractPartNameFromSessionId(workingSessionId),
+            customerPartNumber:
+              lockedDraft?.customerPartNumber ||
+              formDraft?.CustomerPartNumber ||
+              extractPartNumberFromSessionId(workingSessionId),
+            subject,
+            body,
+            reportS3Path: secureReportS3Path,
+            assessmentReportS3Path: secureReportS3Path,
+            reportFileName: secureReportFileName,
+            attachmentFileName: secureReportFileName,
+          },
+          token
+        );
+
+        emailSentKeysRef.current.add(sendKey);
+
+        const emailStatus =
+          getWorkflowStatusFromApiResponse(res) ||
+          normalizeWorkflowStatus("REPORT-DELIVERY");
+
+        if (emailStatus) {
+          setCurrentRequestStatusOverride(emailStatus);
+        }
+
+        addMessage({
+          sender: "bot",
+          role: "assistant",
+          text:
+            res?.reply ||
+            res?.message ||
+            `✅ Secure report link sent successfully to ${to}. Customer must verify OTP before viewing or downloading the report.`,
+          RequestStatus: emailStatus,
+          requestStatus: emailStatus,
+          workflowState: emailStatus,
+          artifact: {
+            type: "report_delivery_link_sent",
+            requestId,
+            customerEmail: to,
+            reportS3Path: secureReportS3Path,
+            reportFileName: secureReportFileName,
+            response: res,
+            RequestStatus: emailStatus,
+            requestStatus: emailStatus,
+            workflowState: emailStatus,
+          },
+        });
+
+        pushLocalCustomerRequestSuggestion({
+          sessionId: res?.sessionId || workingSessionId,
+          requestId: res?.requestId || requestId,
+          customerName:
+            lockedDraft?.customerName ||
+            formDraft?.CustomerName ||
+            "",
+          customerPartName:
+            lockedDraft?.customerPartName ||
+            formDraft?.CustomerPartName ||
+            extractPartNameFromSessionId(workingSessionId),
+          customerPartNumber:
+            lockedDraft?.customerPartNumber ||
+            formDraft?.CustomerPartNumber ||
+            extractPartNumberFromSessionId(workingSessionId),
+          requestStatus: emailStatus,
+        });
+
+        await refreshActiveRequestStatus();
+        await refreshSidebar?.();
+        window.setTimeout(() => refreshActiveRequestStatus(), 2500);
+        window.setTimeout(() => refreshActiveRequestStatus(), 6000);
+        return;
+      }
+
       const res = await sendCustomerEmail(
         {
           sessionId: workingSessionId,
@@ -9594,64 +9747,36 @@ Next step: Waiting for the customer response. Once the reply is received, review
       const workingSessionId = getActiveSessionId();
       if (!workingSessionId || !user?.email) return;
 
-      const replyInfo = extractCustomerEmailReplyFromMessages(normalizedMessages);
-      const emailSubject = replyInfo.subject || "Customer email reply";
-      const emailBody = replyInfo.body || "Customer reply reviewed and approved by engineer.";
-
       setSubmittingEmailReview(true);
 
       const token = await getAccessToken();
 
-      // Step 1: keep the existing email-review update.
-      // This is NOT the old temporary assessment endpoint.
-      // It only records that engineer accepted the customer reply.
-      const reviewRes = await processCustomerReply(
-        {
-          sessionId: workingSessionId,
-          userId: user?.email,
-          emailSubject,
-          emailBody,
-          action: "SUBMIT_FOR_ASSESSMENT",
-          askType: "EMAIL REVIEW",
-        },
-        token
-      );
+      // REQUEST-CONFIRMED already means the customer reply was processed and
+      // accepted. Do NOT call processCustomerReply() again here, otherwise the
+      // backend writes another REQUEST-CONFIRMED message immediately before
+      // assessment submission.
+      const finalRequestId = extractRequestIdFromSessionId(workingSessionId);
+      const finalSessionId = workingSessionId;
 
-      const finalRequestId =
-        reviewRes?.requestId ||
-        reviewRes?.RequestId ||
-        extractRequestIdFromSessionId(workingSessionId);
+      if (!finalRequestId) {
+        throw new Error("Unable to resolve Customer Request ID for assessment");
+      }
 
-      const finalSessionId =
-        reviewRes?.sessionId ||
-        reviewRes?.SessionId ||
-        workingSessionId;
-
-      // Step 2: trigger the only assessment endpoint allowed by KC:
-      // /fmd-assessment -> FMD Core Engine AgentCore runtime.
-      // KC working payload:
-      // WorkflowName, WorkflowRunId, WorkflowRunType=Full,
-      // CustomerName, CustomerRequestId, ChatSessionId, ChatUserId,
-      // DelegationCapacity, EngineeringPartKey.
+      // Trigger the only assessment endpoint allowed by KC.
+      // Frontend sends only minimal app context. The dedicated assessment
+      // backend builds KC's complete AgentCore workflow payload in one place.
       const fmdRes = await triggerFmdAssessment(
         {
-          WorkflowName: "FMD",
-          WorkflowRunId: makeKcWorkflowRunId(),
-          WorkflowRunType: "Full",
-          CustomerName: "General Motors",
-          CustomerRequestId: finalRequestId,
-          ChatSessionId: finalSessionId,
-          ChatUserId: user?.email,
-          DelegationCapacity: "3",
-          EngineeringPartKey: "BRK-7700#High-Perf Brake Assy",
+          requestId: finalRequestId,
+          sessionId: finalSessionId,
+          userId: user?.email,
         },
         token
       );
 
       const assessmentSubmitStatus =
         getWorkflowStatusFromApiResponse(fmdRes) ||
-        getWorkflowStatusFromApiResponse(reviewRes) ||
-        normalizeWorkflowStatus("ASSESSMENT-INPROGRESS");
+        normalizeWorkflowStatus("ASSESSMENT-TRIGGERED");
 
       setCurrentRequestStatusOverride(assessmentSubmitStatus);
 
@@ -9661,12 +9786,16 @@ Next step: Waiting for the customer response. Once the reply is received, review
         text:
           fmdRes?.reply ||
           fmdRes?.message ||
-          "✅ Email review completed and FMD Core Engine assessment triggered.",
+          "✅ FMD Core Engine assessment triggered successfully.",
         RequestStatus: assessmentSubmitStatus,
         requestStatus: assessmentSubmitStatus,
+        workflowState: assessmentSubmitStatus,
         artifact: {
           type: "fmd_assessment_result",
           requestId: finalRequestId,
+          RequestStatus: assessmentSubmitStatus,
+          requestStatus: assessmentSubmitStatus,
+          workflowState: assessmentSubmitStatus,
           response: fmdRes,
         },
       });
@@ -9676,9 +9805,11 @@ Next step: Waiting for the customer response. Once the reply is received, review
         requestId: finalRequestId,
         customerName: formDraft?.CustomerName || "",
         customerPartName:
-          formDraft?.CustomerPartName || extractPartNameFromSessionId(finalSessionId),
+          formDraft?.CustomerPartName ||
+          extractPartNameFromSessionId(finalSessionId),
         customerPartNumber:
-          formDraft?.CustomerPartNumber || extractPartNumberFromSessionId(finalSessionId),
+          formDraft?.CustomerPartNumber ||
+          extractPartNumberFromSessionId(finalSessionId),
         requestStatus: assessmentSubmitStatus,
       });
 
@@ -9691,7 +9822,10 @@ Next step: Waiting for the customer response. Once the reply is received, review
       addMessage({
         sender: "bot",
         role: "assistant",
-        text: `❌ ${e?.message || "Failed to submit request for FMD Core Engine assessment"}`,
+        text: `❌ ${
+          e?.message ||
+          "Failed to submit request for FMD Core Engine assessment"
+        }`,
       });
     } finally {
       setSubmittingEmailReview(false);
@@ -10205,26 +10339,43 @@ Next step: Waiting for the customer response. Once the reply is received, review
     return "";
   }, [normalizedMessages]);
 
+  const emailReviewAssessmentStatus = useMemo(() => {
+    // Prefer the immediate local response after a successful submit so the
+    // button changes state without waiting for the next poll. Backend status
+    // from /initialise remains the long-term source of truth.
+    return normalizeWorkflowStatus(
+      currentRequestStatusOverride || currentRequestStatus || ""
+    );
+  }, [currentRequestStatusOverride, currentRequestStatus]);
+
+  const isEmailReviewAssessmentTriggered = useMemo(() => {
+    return [
+      "ASSESSMENT-TRIGGERED",
+      "ASSESSMENT-INPROGRESS",
+      "ASSESSMENT-COMPLETED",
+      "RESULTS-REVIEW",
+      "RESULTS-APPROVED",
+      "RESULTS-SUBMITTED",
+      "REQUEST-CLOSED",
+    ].includes(emailReviewAssessmentStatus);
+  }, [emailReviewAssessmentStatus]);
+
   const canShowEmailReviewActionCard = useMemo(() => {
     // Request Monitoring & Status should only show the dashboard/status view.
-    // Do not show old EMAIL-REVIEW action cards here because they confuse the
-    // monitoring screen with customer-request action flow.
+    // Supplier task sessions are separate from customer request review.
     if (isRequestMonitoringSession) return false;
     if (isActiveSupplierTaskSession) return false;
-    if (!hasEmailReviewSignal(normalizedMessages)) return false;
 
-    const alreadySubmitted = normalizedMessages.some((m) => {
-      const text = String(m?.text || "").toLowerCase();
-      return (
-        text.includes("request-confirmed") ||
-        text.includes("submitted for assessment") ||
-        text.includes("email review completed") ||
-        text.includes("request-closed")
-      );
-    });
-
-    return !alreadySubmitted;
-  }, [normalizedMessages, isActiveSupplierTaskSession, isRequestMonitoringSession]);
+    // Once an email-review card exists, keep it visible as request history.
+    // REQUEST-CONFIRMED means the customer reply was accepted; it does NOT mean
+    // assessment was already submitted. After submission, the same card stays
+    // visible with a disabled "Assessment Triggered" button.
+    return hasEmailReviewSignal(normalizedMessages);
+  }, [
+    normalizedMessages,
+    isActiveSupplierTaskSession,
+    isRequestMonitoringSession,
+  ]);
 
   const renderFormMessageRow = (key) => (
     <div key={key} className="msg-row bot">
@@ -10500,6 +10651,8 @@ Next step: Waiting for the customer response. Once the reply is received, review
                     onSubmitForAssessment={handleSubmitEmailReviewForAssessment}
                     onRequestChanges={handleRequestChangesFromEmailReview}
                     loading={submittingEmailReview}
+                    assessmentTriggered={isEmailReviewAssessmentTriggered}
+                    assessmentStatus={emailReviewAssessmentStatus}
                   />
                   {formatMessageTime(emailReviewActionTimestamp) && (
                     <div

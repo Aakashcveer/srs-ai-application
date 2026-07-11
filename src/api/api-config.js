@@ -12,6 +12,15 @@ export const API_BASE_URL = (
   "https://mfdhqhocm4.execute-api.ap-south-1.amazonaws.com"
 ).replace(/\/$/, "");
 
+// Report Delivery API.
+// If the /report routes are deployed on a separate API Gateway, set
+// VITE_REPORT_DELIVERY_API_BASE_URL in Amplify/frontend env.
+// If not set, it falls back to the main chat API base URL.
+export const REPORT_DELIVERY_API_BASE_URL = (
+  import.meta.env.VITE_REPORT_DELIVERY_API_BASE_URL ||
+  API_BASE_URL
+).replace(/\/$/, "");
+
 // KC final decision:
 // Keep only one assessment endpoint in the chat app.
 // Old temporary /assessment-trigger API is no longer used.
@@ -21,6 +30,7 @@ console.log("✅ LOADED api-config.js FROM:", import.meta.url, "TIME:", Date.now
 console.log("✅ api-config UPDATED VERSION 1031 - DIRTY FORM POLLING + ENGINEER LANDING");
 console.log("✅ CHAT API BASE URL:", API_BASE_URL);
 console.log("✅ FMD CORE ENGINE URL:", `${API_BASE_URL}/fmd-assessment`);
+console.log("✅ REPORT DELIVERY API BASE URL:", REPORT_DELIVERY_API_BASE_URL);
 
 // ===============================
 // ENDPOINTS
@@ -73,12 +83,16 @@ export const ENDPOINTS = {
   assessmentReportPresign: `${API_BASE_URL}/assessment/report/presign`,
   assessmentEmailGenerate: `${API_BASE_URL}/assessment/email/generate`,
 
-  // ✅ REPORT DELIVERY PUBLIC CUSTOMER FLOW
-  reportValidateToken: `${API_BASE_URL}/report/validate-token`,
-  reportSendOtp: `${API_BASE_URL}/report/send-otp`,
-  reportVerifyOtp: `${API_BASE_URL}/report/verify-otp`,
-  reportDownload: `${API_BASE_URL}/report/download`,
-  reportSubmitFeedback: `${API_BASE_URL}/report/submit-feedback`,
+  // ✅ REPORT DELIVERY CUSTOMER FLOW
+  // Internal engineer action:
+  reportSendSecureLink: `${REPORT_DELIVERY_API_BASE_URL}/report/send-secure-link`,
+
+  // Public customer portal actions:
+  reportValidateToken: `${REPORT_DELIVERY_API_BASE_URL}/report/validate-token`,
+  reportSendOtp: `${REPORT_DELIVERY_API_BASE_URL}/report/send-otp`,
+  reportVerifyOtp: `${REPORT_DELIVERY_API_BASE_URL}/report/verify-otp`,
+  reportDownload: `${REPORT_DELIVERY_API_BASE_URL}/report/download`,
+  reportSubmitFeedback: `${REPORT_DELIVERY_API_BASE_URL}/report/submit-feedback`,
 
   // CONFIG
   config: `${API_BASE_URL}/config`,
@@ -164,23 +178,6 @@ export const getSelectedRegulationLabels = (detail = {}) => {
 };
 
 
-
-const makeKcWorkflowRunId = () => {
-  const now = new Date();
-  const pad = (value, size = 2) => String(value).padStart(size, "0");
-
-  const datePart = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
-  const timePart = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-  const microPart = `${pad(now.getMilliseconds(), 3)}000`;
-  const randomPart =
-    typeof crypto !== "undefined" && crypto?.getRandomValues
-      ? Array.from(crypto.getRandomValues(new Uint8Array(4)))
-          .map((byte) => byte.toString(16).padStart(2, "0"))
-          .join("")
-      : Math.random().toString(16).slice(2, 10).padEnd(8, "0");
-
-  return `${datePart}#${timePart}#${microPart}#${randomPart.slice(0, 8)}`;
-};
 
 
 // ===============================
@@ -854,56 +851,28 @@ export const getCustomerRequestLiveStatus = async (
 
 // ===============================
 // ✅ ASSESSMENT WORKFLOW TRIGGER
-// KC final decision:
-// Old temporary /assessment-trigger is removed/stopped.
-// This function name is kept only for backward compatibility with existing UI imports.
-// It now calls the real Core Engine endpoint: POST /fmd-assessment.
+// Backward-compatible export used by existing UI imports.
+// Frontend sends only app context. The assessment backend is the
+// single source of truth for KC's AgentCore workflow payload.
 // ===============================
 export const triggerAssessmentWorkflow = async (
   {
     requestId = "",
     customerRequestId = "",
+    sessionId = "",
     chatSessionId = "",
+    userId = "",
     chatUserId = "",
-    customerName = "",
-    customerPart = "",
-    requestStatus = "",
-    customerPartKey = "",
-    engineeringPartKey = "",
-    workflowRunType = "Full",
-    delegationCapacity = "3",
   } = {},
   token = ""
 ) => {
   assertToken(token);
 
-  const finalRequestId = asString(requestId || customerRequestId);
-
-  if (!finalRequestId) {
-    throw new Error("CustomerRequestId is required");
-  }
-
-  const resolvedCustomerPartKey = asString(customerPartKey || customerPart);
-
-  const parsedEngineeringPartKey =
-    asString(engineeringPartKey) ||
-    (resolvedCustomerPartKey.includes("#")
-      ? resolvedCustomerPartKey.split("#")[0]
-      : resolvedCustomerPartKey);
-
   return triggerFmdAssessment(
     {
-      requestId: finalRequestId,
-      customerRequestId: finalRequestId,
-      chatSessionId,
-      chatUserId,
-      workflowRunType,
-      delegationCapacity,
-      customerPartKey: resolvedCustomerPartKey,
-      engineeringPartKey: parsedEngineeringPartKey,
-      customerName,
-      customerPart,
-      requestStatus,
+      requestId: asString(requestId || customerRequestId),
+      sessionId: asString(sessionId || chatSessionId),
+      userId: asString(userId || chatUserId),
     },
     token
   );
@@ -911,62 +880,57 @@ export const triggerAssessmentWorkflow = async (
 
 // ===============================
 // ✅ KC FMD / CORE ENGINE ASSESSMENT
-// POST /fmd-assessment on main srs-ai-dev-user-chat API
-// IMPORTANT: This uses API_BASE_URL through ENDPOINTS.fmdAssessment.
+// POST /fmd-assessment on main srs-ai-dev-user-chat API.
+//
+// IMPORTANT:
+// The frontend sends only application context:
+//   - RequestId
+//   - SessionId
+//   - UserId
+//
+// The assessment backend alone builds KC's AgentCore payload:
+// WorkflowAction, WorkflowName, WorkflowRunId, WorkflowRunType,
+// CustomerRequestId, ChatSessionId, ChatUserId, DelegationCapacity,
+// and runtimeSessionId.
 // ===============================
-export const triggerFmdAssessment = async (
-  payload = {},
-  token
-) => {
+export const triggerFmdAssessment = async (payload = {}, token) => {
   assertToken(token);
 
   const finalRequestId = asString(
-    payload.CustomerRequestId ||
-      payload.customerRequestId ||
-      payload.RequestId ||
-      payload.requestId
+    payload.RequestId ||
+      payload.requestId ||
+      payload.CustomerRequestId ||
+      payload.customerRequestId
+  );
+
+  const finalSessionId = asString(
+    payload.SessionId ||
+      payload.sessionId ||
+      payload.ChatSessionId ||
+      payload.chatSessionId
+  );
+
+  const finalUserId = asString(
+    payload.UserId ||
+      payload.userId ||
+      payload.ChatUserId ||
+      payload.chatUserId ||
+      payload.email
   );
 
   if (!finalRequestId) {
-    throw new Error("CustomerRequestId is required");
+    throw new Error("RequestId is required");
   }
 
-  const kcSessionPayload = {
-    WorkflowName: "FMD",
-    WorkflowRunId: asString(payload.WorkflowRunId || payload.workflowRunId) || makeKcWorkflowRunId(),
-    WorkflowRunType: "Full",
-    CustomerName: asString(
-      payload.CustomerName ||
-        payload.customerName ||
-        "General Motors"
-    ),
-    CustomerRequestId: finalRequestId,
-    ChatSessionId: asString(
-      payload.ChatSessionId ||
-        payload.chatSessionId ||
-        payload.SessionId ||
-        payload.sessionId
-    ),
-    ChatUserId: asString(
-      payload.ChatUserId ||
-        payload.chatUserId ||
-        payload.UserId ||
-        payload.userId ||
-        payload.email
-    ),
-    DelegationCapacity: String(
-      payload.DelegationCapacity ||
-        payload.delegationCapacity ||
-        "3"
-    ),
-    EngineeringPartKey: asString(
-      payload.EngineeringPartKey ||
-        payload.engineeringPartKey ||
-        payload.EngPartkey ||
-        payload.engPartkey ||
-        "BRK-7700#High-Perf Brake Assy"
-    ),
-  };
+  if (!finalSessionId) {
+    throw new Error("SessionId is required");
+  }
+
+  // UserId is kept for compatibility/fallback. When API Gateway JWT claims
+  // are available, the backend prefers the authenticated identity.
+  if (!finalUserId) {
+    throw new Error("UserId is required");
+  }
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_AGENT);
@@ -979,7 +943,13 @@ export const triggerFmdAssessment = async (
         Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({
-        session: kcSessionPayload,
+        session: {
+          SessionId: finalSessionId,
+          UserId: finalUserId,
+        },
+        payload: {
+          RequestId: finalRequestId,
+        },
       }),
       signal: controller.signal,
     });
@@ -1794,6 +1764,121 @@ export const sendCustomerEmail = async (
           data?.message ||
           text ||
           `Send email failed (${res.status})`
+      );
+    }
+
+    return data;
+  } catch (e) {
+    if (String(e?.name).includes("AbortError")) {
+      throw new Error("REQUEST_TIMEOUT");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+
+
+// ===============================
+// ✅ SEND SECURE REPORT LINK
+// POST /report/send-secure-link
+// ===============================
+export const sendSecureReportLink = async (
+  {
+    sessionId = "",
+    userId = "",
+    requestId = "",
+    customerEmail = "",
+    customerName = "",
+    customerPartName = "",
+    customerPartNumber = "",
+    subject = "",
+    body = "",
+    reportS3Path = "",
+    reportS3Key = "",
+    assessmentReportS3Path = "",
+    reportFileName = "",
+    attachmentFileName = "",
+  } = {},
+  token
+) => {
+  assertToken(token);
+
+  const finalReportPath =
+    asString(reportS3Path) ||
+    asString(reportS3Key) ||
+    asString(assessmentReportS3Path);
+
+  const finalFileName =
+    asString(reportFileName) ||
+    asString(attachmentFileName) ||
+    finalReportPath.split("/").pop() ||
+    "assessment-report.pdf";
+
+  if (!requestId) throw new Error("requestId is required");
+  if (!customerEmail) throw new Error("customerEmail is required");
+  if (!finalReportPath) throw new Error("reportS3Path is required");
+
+  const payload = {
+    requestId,
+    RequestId: requestId,
+    customerEmail,
+    CustomerEmail: customerEmail,
+    customerContactEmailId: customerEmail,
+    CustomerContactEmailId: customerEmail,
+    customerName,
+    CustomerName: customerName,
+    customerPartName,
+    CustomerPartName: customerPartName,
+    customerPartNumber,
+    CustomerPartNumber: customerPartNumber,
+    reportS3Path: finalReportPath,
+    ReportS3Path: finalReportPath,
+    reportS3Key: finalReportPath,
+    ReportS3Key: finalReportPath,
+    assessmentReportS3Path: finalReportPath,
+    AssessmentReportS3Path: finalReportPath,
+    reportFileName: finalFileName,
+    ReportFileName: finalFileName,
+    attachmentFileName: finalFileName,
+    AttachmentFileName: finalFileName,
+    subject,
+    Subject: subject,
+    body,
+    Body: body,
+  };
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_STANDARD);
+
+  try {
+    const res = await fetch(ENDPOINTS.reportSendSecureLink, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        session: {
+          SessionId: sessionId,
+          UserId: userId,
+          ...payload,
+        },
+        payload,
+        ...payload,
+      }),
+      signal: controller.signal,
+    });
+
+    const { text, data } = await parseJsonSafe(res);
+
+    if (!res.ok) {
+      throw new Error(
+        data?.error ||
+          data?.message ||
+          text ||
+          `Send secure report link failed (${res.status})`
       );
     }
 
