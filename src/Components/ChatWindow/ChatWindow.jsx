@@ -6730,12 +6730,26 @@ const CustomerRequestStepCard = ({
     [message?.options]
   );
 
+  const optionsFingerprint = useMemo(
+    () =>
+      (Array.isArray(message?.options) ? message.options : [])
+        .map((value) => normalizePartMatchValue(value))
+        .filter(Boolean)
+        .sort()
+        .join("|"),
+    [message?.options]
+  );
+
+  // Scope persisted multi-part UI state to the exact backend option set.
+  // The "New Customer Request" helper session is reused for every customer;
+  // using only sessionId + step allowed parts selected for an earlier customer
+  // (for example BMW) to reappear for a different customer (for example Toyota).
   const storageKey = useMemo(
     () =>
       `assure-ai-multipart-demo:${String(sessionId || "customer-request")}:${String(
         message?.step || "parts"
-      )}`,
-    [sessionId, message?.step]
+      )}:${optionsFingerprint}`,
+    [sessionId, message?.step, optionsFingerprint]
   );
 
   useEffect(() => {
@@ -6745,18 +6759,54 @@ const CustomerRequestStepCard = ({
   useEffect(() => {
     if (!isPartSelectionStep) return;
 
+    // Always start from the current customer's backend options. This prevents a
+    // previous customer's selected part from being submitted to the next flow.
+    setSelectedParts([]);
+    setExcelParts([]);
+    setExcelFileName("");
+    setExcelError("");
+    setPartMode("SYSTEM");
+
     try {
       const raw = sessionStorage.getItem(storageKey);
       if (!raw) return;
+
       const saved = JSON.parse(raw);
-      if (Array.isArray(saved?.selectedParts)) setSelectedParts(saved.selectedParts);
-      if (Array.isArray(saved?.excelParts)) setExcelParts(saved.excelParts);
-      if (saved?.partMode) setPartMode(saved.partMode);
+      const currentOptionKeys = new Set(
+        systemParts.map((part) =>
+          normalizePartMatchValue(
+            part?.optionValue || part?.partNumber || part?.partName
+          )
+        )
+      );
+
+      const safeSelectedParts = Array.isArray(saved?.selectedParts)
+        ? saved.selectedParts.filter((part) =>
+            currentOptionKeys.has(
+              normalizePartMatchValue(
+                part?.optionValue || part?.partNumber || part?.partName
+              )
+            )
+          )
+        : [];
+
+      setSelectedParts(safeSelectedParts);
+
+      // Excel rows are also customer-specific because validation is against the
+      // current customer's system parts. Revalidate before restoring them.
+      const safeExcelParts = Array.isArray(saved?.excelParts)
+        ? saved.excelParts.map((part) => validateImportedPart(part, systemParts))
+        : [];
+
+      setExcelParts(safeExcelParts);
+      if (saved?.partMode === "EXCEL" || saved?.partMode === "SYSTEM") {
+        setPartMode(saved.partMode);
+      }
       if (saved?.excelFileName) setExcelFileName(saved.excelFileName);
     } catch (error) {
       console.warn("Unable to restore multi-part demo state", error);
     }
-  }, [isPartSelectionStep, storageKey]);
+  }, [isPartSelectionStep, storageKey, systemParts]);
 
   useEffect(() => {
     if (!isPartSelectionStep) return;
@@ -6949,6 +6999,27 @@ const CustomerRequestStepCard = ({
         .join(" | ");
 
     if (!optionValue) return;
+
+    // Never send a stale part from a previous customer/helper-session attempt.
+    // System selections must exist in the exact option list returned by backend.
+    if (partMode === "SYSTEM") {
+      const selectedKey = normalizePartMatchValue(optionValue);
+      const currentOptionKeys = new Set(
+        systemParts.map((part) =>
+          normalizePartMatchValue(
+            part?.optionValue || part?.partNumber || part?.partName
+          )
+        )
+      );
+
+      if (!currentOptionKeys.has(selectedKey)) {
+        setSelectedParts([]);
+        setExcelError(
+          "The customer changed and the previous part selection was cleared. Please select a part from the current list."
+        );
+        return;
+      }
+    }
 
     // IMPORTANT:
     // The UI demonstrates multi-part readiness, but the current Customer Request
