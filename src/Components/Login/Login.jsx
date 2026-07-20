@@ -150,8 +150,6 @@ const Login = ({ onAuthenticate }) => {
   const btnRef = useRef(null);
   const verifyBtnRef = useRef(null);
   const otpInputs = useRef([]);
-  const tiltRef = useRef(null);
-  useTilt(tiltRef);
 
   // Countdown timer for resend
   useEffect(() => {
@@ -286,35 +284,46 @@ const Login = ({ onAuthenticate }) => {
   };
 
   const LeftPanel = () => (
-    <div className="dp-left">
-      <div className="dp-logo">
-        <div className="dp-logo-icon">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" fill="rgba(255,255,255,0.15)"/>
-            <polyline points="9 12 11 14 15 10"/>
-          </svg>
-        </div>
-        <span className="dp-logo-text dp-shimmer">ASSURE-AI</span>
-      </div>
-      <div className="dp-hero">
-        <p className="dp-eyebrow">AI-Powered Sustainability</p>
-        <h1 className="dp-headline"><span className="dp-headline-gradient">Compliance Workflow</span></h1>
-        <p className="dp-tagline">Intelligent. Secure. Compliant.<br/>All in one platform.</p>
-      </div>
-      <div className="dp-feat-grid">
-        {[
-          { icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>, label: ["Full Material","Disclosure"] },
-          { icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>, label: ["AI Assessment","Engine"] },
-          { icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>, label: ["Supplier","Collaboration"] },
-          { icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>, label: ["Real-time","Monitoring"] },
-        ].map((f, i) => (
-          <div key={i} className="dp-feat">
-            <div className="dp-feat-icon dp-feat-icon-hover">{f.icon}</div>
-            <span>{f.label[0]}<br/>{f.label[1]}</span>
+    <section className="dp-left">
+      <div className="dp-left-top">
+        <div className="dp-logo">
+          <div className="dp-logo-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" fill="rgba(255,255,255,0.12)" />
+              <polyline points="9 12 11 14 15 10" />
+            </svg>
           </div>
-        ))}
+          <span className="dp-logo-text">ASSURE-AI</span>
+        </div>
       </div>
-    </div>
+
+      <div className="dp-left-main">
+        <p className="dp-eyebrow">Sustainability Compliance, Reimagined.</p>
+        <h1 className="dp-headline">AI-Powered Compliance<span>Assessment &amp; Delivery.</span></h1>
+        <p className="dp-tagline">Orchestrate assessments, stakeholder collaboration and evidence collection</p>
+
+        <div className="dp-capability-list">
+          {[
+            ['fmd', 'Full Material Disclosure', 'file'],
+            ['assessment', 'Adaptive AI Assessment', 'ai'],
+            ['collaboration', 'Stakeholder Collaboration & Task Automation', 'people'],
+            ['visibility', 'Continuous Compliance Visibility', 'chart'],
+          ].map(([id, title, type]) => (
+            <div className="dp-capability" key={id}>
+              <div className="dp-capability-icon" aria-hidden="true">
+                {type === 'file' && <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>}
+                {type === 'ai' && <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.93 4.93l2.12 2.12M16.95 16.95l2.12 2.12M2 12h3M19 12h3M4.93 19.07l2.12-2.12M16.95 7.05l2.12-2.12"/></svg>}
+                {type === 'people' && <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M22 11h-6"/></svg>}
+                {type === 'chart' && <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><line x1="6" y1="20" x2="6" y2="14"/><line x1="12" y1="20" x2="12" y2="8"/><line x1="18" y1="20" x2="18" y2="4"/></svg>}
+              </div>
+              <span>{title}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      
+    </section>
   );
 
   return (
@@ -326,14 +335,28 @@ const Login = ({ onAuthenticate }) => {
         <LeftPanel />
 
         {/* Flipping card */}
-        <div className="dp-right" ref={tiltRef}>
+        <div className="dp-right">
           <div className={`dp-card-flipper${flipped ? " dp-card-flipped" : ""}`}>
 
             {/* FRONT — Email */}
             <div className="dp-card-face dp-card-front dp-card-glow">
+              <div className="dp-auth-brand">
+                <div className="dp-auth-brand-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                    <polyline points="9 12 11 14 15 10" />
+                  </svg>
+                </div>
+                <div className="dp-auth-brand-copy">
+                  <strong>ASSURE-AI</strong>
+                  <span>Secure Workspace Access</span>
+                </div>
+              </div>
+
               <p className="dp-card-eyebrow">Welcome back</p>
-              <h2 className="dp-card-title">Sign in to your account</h2>
-              <p className="dp-card-sub">Enter your work email and we'll send you a secure one-time code.</p>
+              <h2 className="dp-card-title">Sign in</h2>
+              <p className="dp-card-sub"></p>
 
               <label className="dp-label">WORK EMAIL</label>
               <div className={`dp-input-wrap${shake ? " dp-shake" : ""}`}>
@@ -361,12 +384,12 @@ const Login = ({ onAuthenticate }) => {
                 disabled={loading}
                 style={{ position: "relative", overflow: "hidden" }}
               >
-                {loading ? <span className="dp-btn-loading"><span/><span/><span/></span> : "Send one-time code"}
+                {loading ? <span className="dp-btn-loading"><span/><span/><span/></span> : "Send OTP"}
               </button>
 
               <div className="dp-divider">
                 <div className="dp-divider-line"/>
-                <span>sign in as</span>
+                <span></span>
                 <div className="dp-divider-line"/>
               </div>
 
@@ -393,6 +416,12 @@ const Login = ({ onAuthenticate }) => {
                 ))}
               </div>
 
+              <div className="dp-auth-meta">
+                <span>Encrypted access</span>
+                <span>•</span>
+                <span>Enterprise workspace</span>
+              </div>
+
               <div className="dp-footer">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
@@ -403,6 +432,20 @@ const Login = ({ onAuthenticate }) => {
 
             {/* BACK — OTP */}
             <div className="dp-card-face dp-card-back dp-card-glow">
+              <div className="dp-auth-brand">
+                <div className="dp-auth-brand-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                    <polyline points="9 12 11 14 15 10" />
+                  </svg>
+                </div>
+                <div className="dp-auth-brand-copy">
+                  <strong>ASSURE-AI</strong>
+                  <span>Secure Workspace Access</span>
+                </div>
+              </div>
+
               <div className="dp-otp-success-icon">
                 <svg viewBox="0 0 24 24" fill="none" stroke="#1ecb85" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="28" height="28">
                   <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
