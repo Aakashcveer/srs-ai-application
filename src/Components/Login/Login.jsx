@@ -355,7 +355,7 @@ const Login = ({ onAuthenticate }) => {
                 </div>
               </div>
 
-              <p className="dp-card-eyebrow">Welcome back</p>
+              <p className="dp-card-eyebrow">Welcome</p>
               <h2 className="dp-card-title">Sign in</h2>
               <p className="dp-card-sub"></p>
 
