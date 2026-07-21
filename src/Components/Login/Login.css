@@ -1732,3 +1732,34 @@
     min-height: 80px;
   }
 }
+
+
+/* KC wording fit refinements */
+.dp-headline {
+  max-width: 650px !important;
+}
+
+.dp-tagline {
+  max-width: 620px !important;
+}
+
+.dp-capability span {
+  line-height: 1.35 !important;
+}
+
+@media (min-width: 1081px) {
+  .dp-headline {
+    font-size: clamp(38px, 3.45vw, 54px) !important;
+    line-height: 1.04 !important;
+  }
+
+  .dp-capability {
+    min-height: 48px !important;
+  }
+}
+
+@media (max-width: 620px) {
+  .dp-headline {
+    font-size: 36px !important;
+  }
+}

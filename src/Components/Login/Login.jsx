@@ -298,16 +298,17 @@ const Login = ({ onAuthenticate }) => {
       </div>
 
       <div className="dp-left-main">
-        <p className="dp-eyebrow">Sustainability Compliance, Reimagined.</p>
-        <h1 className="dp-headline">AI-Powered Compliance<span>Assessment &amp; Delivery.</span></h1>
-        <p className="dp-tagline">Orchestrate assessments, stakeholder collaboration and evidence collection</p>
+        
+       <h1 className="dp-headline">Compliance &amp; Assessment <span>Delivery Agents </span></h1>
+        <p className="dp-eyebrow">Secure Collaboration. Autonomous Execution. Verifiable Trust.</p>
+        
 
         <div className="dp-capability-list">
           {[
-            ['fmd', 'Full Material Disclosure', 'file'],
-            ['assessment', 'Adaptive AI Assessment', 'ai'],
-            ['collaboration', 'Stakeholder Collaboration & Task Automation', 'people'],
-            ['visibility', 'Continuous Compliance Visibility', 'chart'],
+            ['fmd', 'FMD Reporting', 'file'],
+            ['assessment', 'Flexible and Scalable AI Workforce', 'ai'],
+            ['collaboration', 'Autonomous Collaboration & Task Management ', 'people'],
+            ['visibility', 'Real-Time Visibility & Insights', 'chart'],
           ].map(([id, title, type]) => (
             <div className="dp-capability" key={id}>
               <div className="dp-capability-icon" aria-hidden="true">
