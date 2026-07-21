@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import "./Login.css";
+import CapabilityModal from "./CapabilityModal";
+import { CAPABILITIES } from "./capabilityData";
 import { sendOtp, getAccessToken, verifyOtp, resendOtp } from "../../AWS/auth";
 
 /* ── Particle canvas ── */
@@ -89,32 +91,9 @@ const ROLES = [
   { id: "customer", label: "Customer", icon: (<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>) },
 ];
 
-/* ── Card tilt on mouse move ── */
-const useTilt = (ref) => {
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const handleMove = (e) => {
-      const rect = el.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-      const cx = rect.width / 2;
-      const cy = rect.height / 2;
-      const rotateX = ((y - cy) / cy) * -8;
-      const rotateY = ((x - cx) / cx) * 8;
-      el.style.transform = `perspective(1000px) rotateX(${rotateX}deg) rotateY(${rotateY}deg) scale3d(1.02,1.02,1.02)`;
-    };
-    const handleLeave = () => {
-      el.style.transform = "perspective(1000px) rotateX(0deg) rotateY(0deg) scale3d(1,1,1)";
-    };
-    el.addEventListener("mousemove", handleMove);
-    el.addEventListener("mouseleave", handleLeave);
-    return () => {
-      el.removeEventListener("mousemove", handleMove);
-      el.removeEventListener("mouseleave", handleLeave);
-    };
-  }, []);
-};
+
+
+
 
 /* ── Minimal success overlay ── */
 const CelebrationOverlay = () => (
@@ -146,6 +125,7 @@ const Login = ({ onAuthenticate }) => {
   const [exiting, setExiting] = useState(false);
   const [selectedRole, setSelectedRole] = useState(null);
   const [shake, setShake] = useState(false);
+  const [activeCapability, setActiveCapability] = useState(null);
   const emailRef = useRef(null);
   const btnRef = useRef(null);
   const verifyBtnRef = useRef(null);
@@ -180,6 +160,15 @@ const Login = ({ onAuthenticate }) => {
       setTimeout(() => otpInputs.current[0]?.focus(), 650);
     }
   }, [flipped]);
+
+  useEffect(() => {
+    if (!activeCapability) return;
+    const handleCapabilityEscape = (event) => {
+      if (event.key === "Escape") setActiveCapability(null);
+    };
+    document.addEventListener("keydown", handleCapabilityEscape);
+    return () => document.removeEventListener("keydown", handleCapabilityEscape);
+  }, [activeCapability]);
 
   const handleRipple = (e, ref) => {
     const btn = ref.current;
@@ -298,32 +287,35 @@ const Login = ({ onAuthenticate }) => {
       </div>
 
       <div className="dp-left-main">
-        
-       <h1 className="dp-headline">Compliance &amp; Assessment <span>Delivery Agents </span></h1>
-        <p className="dp-eyebrow">Secure Collaboration. Autonomous Execution. Verifiable Trust.</p>
-        
+       
+        <h1 className="dp-headline">
+       AI-Powered Materials Compliance 
+       <span>& Sustainability Assessment</span>
+       </h1>
+        <p className="dp-tagline">Secure Collaboration. Autonomous Execution. Verifiable Trust.</p>
 
         <div className="dp-capability-list">
-          {[
-            ['fmd', 'FMD Reporting', 'file'],
-            ['assessment', 'Flexible and Scalable AI Workforce', 'ai'],
-            ['collaboration', 'Autonomous Collaboration & Task Management ', 'people'],
-            ['visibility', 'Real-Time Visibility & Insights', 'chart'],
-          ].map(([id, title, type]) => (
-            <div className="dp-capability" key={id}>
+          {CAPABILITIES.map(({ id, title, type }) => (
+            <button
+              type="button"
+              className="dp-capability"
+              key={id}
+              onClick={() => setActiveCapability(CAPABILITIES.find((item) => item.id === id))}
+              aria-haspopup="dialog"
+            >
               <div className="dp-capability-icon" aria-hidden="true">
-                {type === 'file' && <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>}
-                {type === 'ai' && <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.93 4.93l2.12 2.12M16.95 16.95l2.12 2.12M2 12h3M19 12h3M4.93 19.07l2.12-2.12M16.95 7.05l2.12-2.12"/></svg>}
-                {type === 'people' && <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M22 11h-6"/></svg>}
-                {type === 'chart' && <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><line x1="6" y1="20" x2="6" y2="14"/><line x1="12" y1="20" x2="12" y2="8"/><line x1="18" y1="20" x2="18" y2="4"/></svg>}
+                {type === "file" && <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>}
+                {type === "ai" && <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.93 4.93l2.12 2.12M16.95 16.95l2.12 2.12M2 12h3M19 12h3M4.93 19.07l2.12-2.12M16.95 7.05l2.12-2.12"/></svg>}
+                {type === "people" && <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M22 11h-6"/></svg>}
+                {type === "chart" && <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><line x1="6" y1="20" x2="6" y2="14"/><line x1="12" y1="20" x2="12" y2="8"/><line x1="18" y1="20" x2="18" y2="4"/></svg>}
               </div>
               <span>{title}</span>
-            </div>
+
+            </button>
           ))}
         </div>
-      </div>
-
-      
+          
+        </div>
     </section>
   );
 
@@ -355,7 +347,7 @@ const Login = ({ onAuthenticate }) => {
                 </div>
               </div>
 
-              <p className="dp-card-eyebrow">Welcome</p>
+              <p className="dp-card-eyebrow">Welcome </p>
               <h2 className="dp-card-title">Sign in</h2>
               <p className="dp-card-sub"></p>
 
@@ -517,11 +509,20 @@ const Login = ({ onAuthenticate }) => {
               </div>
               {showCelebration && <CelebrationOverlay />}
             </div>
+            <div className="dp-copyright">
+  © 2026 ASSURE-AI <span>·</span> Secure enterprise access
+</div>
 
           </div>
         </div>
 
       </div>
+
+      <CapabilityModal
+        capability={activeCapability}
+        onClose={() => setActiveCapability(null)}
+      />
+
     </div>
   );
 };
