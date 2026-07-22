@@ -2451,3 +2451,192 @@
     max-width: 620px !important;
   }
 }
+
+/* =========================================================
+   FINAL FONT CONSISTENCY FIX
+   ========================================================= */
+
+.dp-headline,
+.dp-headline span {
+  font-family: 'Inter', sans-serif !important;
+  font-size: clamp(40px, 3.45vw, 54px) !important;
+  font-weight: 750 !important;
+  line-height: 1.04 !important;
+  letter-spacing: -2px !important;
+  color: #ffffff !important;
+  background: none !important;
+  -webkit-background-clip: initial !important;
+  background-clip: initial !important;
+  -webkit-text-fill-color: #ffffff !important;
+}
+
+.dp-headline {
+  max-width: 680px !important;
+  margin: 0 !important;
+  text-wrap: balance;
+}
+
+.dp-headline span {
+  display: block !important;
+  margin-top: 0 !important;
+}
+
+.dp-card-title {
+  font-family: 'Inter', sans-serif !important;
+  font-size: clamp(40px, 3.2vw, 50px) !important;
+  font-weight: 750 !important;
+  line-height: 1.04 !important;
+  letter-spacing: -1.7px !important;
+  color: #17191f !important;
+}
+
+@media (min-width: 1081px) and (max-height: 800px) {
+  .dp-headline,
+  .dp-headline span {
+    font-size: clamp(36px, 3.05vw, 47px) !important;
+  }
+
+  .dp-card-title {
+    font-size: 38px !important;
+  }
+}
+
+@media (max-width: 620px) {
+  .dp-headline,
+  .dp-headline span {
+    font-size: 36px !important;
+    letter-spacing: -1.5px !important;
+  }
+
+  .dp-card-title {
+    font-size: 36px !important;
+  }
+}
+
+/* =========================================================
+   FINAL 50 / 50 PANEL SPLIT
+   ========================================================= */
+
+.dp-layout {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+}
+
+@media (max-width: 1080px) {
+  .dp-layout {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* =========================================================
+   FINAL DEMO POLISH — REQUIRED CHANGES ONLY
+   ========================================================= */
+
+/* Keep the desktop split exactly 50 / 50. */
+.dp-layout {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+}
+
+/* Main title: one consistent font family, size, weight, and line rhythm. */
+.dp-headline,
+.dp-headline span {
+  font-family: 'Inter', sans-serif !important;
+  font-size: clamp(40px, 3.2vw, 52px) !important;
+  font-weight: 750 !important;
+  line-height: 1.045 !important;
+  letter-spacing: -2px !important;
+  color: #ffffff !important;
+  background: none !important;
+  -webkit-background-clip: initial !important;
+  background-clip: initial !important;
+  -webkit-text-fill-color: #ffffff !important;
+}
+
+.dp-headline {
+  width: 100% !important;
+  max-width: 690px !important;
+  margin: 0 !important;
+  text-wrap: balance;
+}
+
+.dp-headline span {
+  display: block !important;
+  margin: 0 !important;
+}
+
+/* Supporting statement: lighter and cleaner. */
+.dp-tagline {
+  color: rgba(255, 255, 255, 0.86) !important;
+  font-weight: 500 !important;
+}
+
+/* Sign in: same Inter family, slightly lighter than the hero title. */
+.dp-card-title {
+  font-family: 'Inter', sans-serif !important;
+  font-size: clamp(40px, 3vw, 48px) !important;
+  font-weight: 650 !important;
+  line-height: 1.06 !important;
+  letter-spacing: -1.7px !important;
+  color: #17191f !important;
+}
+
+/* Subtle premium interaction for clickable capability cards. */
+.dp-capability {
+  transition:
+    transform 0.18s ease,
+    background-color 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.18s ease !important;
+}
+
+.dp-capability:hover {
+  transform: translateY(-2px) !important;
+  background: rgba(255, 255, 255, 0.12) !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+  box-shadow:
+    0 12px 28px rgba(3, 70, 49, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+}
+
+/* Slightly cleaner login-card depth. */
+.dp-card-face {
+  box-shadow:
+    0 28px 68px rgba(22, 43, 35, 0.09),
+    0 5px 18px rgba(22, 43, 35, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.84) !important;
+}
+
+/* Give the copyright line a little more breathing space. */
+.dp-copyright {
+  margin-top: 15px !important;
+}
+
+/* Keep shorter laptop screens balanced at normal 100% browser zoom. */
+@media (min-width: 1081px) and (max-height: 800px) {
+  .dp-headline,
+  .dp-headline span {
+    font-size: clamp(36px, 2.9vw, 46px) !important;
+  }
+
+  .dp-card-title {
+    font-size: 38px !important;
+  }
+}
+
+/* Preserve the existing stacked responsive layout. */
+@media (max-width: 1080px) {
+  .dp-layout {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media (max-width: 620px) {
+  .dp-headline,
+  .dp-headline span {
+    font-size: 36px !important;
+    letter-spacing: -1.5px !important;
+  }
+
+  .dp-card-title {
+    font-size: 36px !important;
+  }
+}
