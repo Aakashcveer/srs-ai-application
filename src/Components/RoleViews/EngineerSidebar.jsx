@@ -191,24 +191,35 @@ const EngineerSidebar = ({
       .replace(/_/g, "-")
       .replace(/\s+/g, "-");
 
-    const statusMap = {
-      "REQUEST-CREATE": { label: "Created", tone: "created" },
-      "REQUEST-CREATED": { label: "Created", tone: "created" },
-      "REQUEST-REVIEW": { label: "Review", tone: "review" },
-      "EMAIL-REVIEW": { label: "Action", tone: "action" },
-      "PENDING-ENGINEER-ACTION": { label: "Action", tone: "action" },
-      "REQUEST-CONFIRMED": { label: "Confirmed", tone: "confirmed" },
-      "ASSESSMENT-TRIGGERED": { label: "Submitted", tone: "submitted" },
-      "ASSESSMENT-INPROGRESS": { label: "Assessment", tone: "assessment" },
-      "ASSESSMENT-IN-PROGRESS": { label: "Assessment", tone: "assessment" },
-      "ASSESSMENT-COMPLETED": { label: "Complete", tone: "complete" },
-      "RESULTS-REVIEW": { label: "Results Review", tone: "results" },
-      "RESULTS-APPROVED": { label: "Approved", tone: "approved" },
-      "RESULTS-SUBMITTED": { label: "Submitted", tone: "submitted" },
-      "REQUEST-CLOSED": { label: "Closed", tone: "closed" },
-    };
+    if (!rawStatus) return null;
 
-    return rawStatus ? statusMap[rawStatus] || null : null;
+    // KC sidebar lifecycle wording:
+    // Create      -> everything before assessment is submitted.
+    // In-progress -> assessment submitted and every stage before explicit closure.
+    // Closed      -> request is explicitly REQUEST-CLOSED.
+    if (rawStatus === "REQUEST-CLOSED") {
+      return { label: "Closed", tone: "closed" };
+    }
+
+    const assessmentHasStarted =
+      rawStatus.startsWith("ASSESSMENT-") ||
+      rawStatus.startsWith("RESULTS-") ||
+      rawStatus.startsWith("REPORT-");
+
+    if (assessmentHasStarted) {
+      return { label: "In-progress", tone: "assessment" };
+    }
+
+    // Keep the existing attention highlight for engineer-action states,
+    // but display KC's high-level lifecycle suffix: Create.
+    if (
+      rawStatus === "EMAIL-REVIEW" ||
+      rawStatus === "PENDING-ENGINEER-ACTION"
+    ) {
+      return { label: "Create", tone: "action" };
+    }
+
+    return { label: "Create", tone: "created" };
   };
 
   const getSupplierUploadedDocumentsCount = (item = {}) => {
@@ -350,6 +361,28 @@ const EngineerSidebar = ({
     );
   }, [groupedSessions]);
 
+  const getCustomerRequestSortTime = (item = {}) => {
+    const value =
+      item?.lastUpdatedDateTime ||
+      item?.LastUpdatedDateTime ||
+      item?.requestUpdatedDateTime ||
+      item?.RequestUpdatedDateTime ||
+      item?.updatedAt ||
+      item?.UpdatedAt ||
+      item?.lastActivityAt ||
+      item?.LastActivityAt ||
+      item?.createdAt ||
+      item?.CreatedAt ||
+      item?.requestCreatedDateTime ||
+      item?.RequestCreatedDateTime ||
+      "";
+
+    if (typeof value === "number") return value;
+
+    const parsed = Date.parse(String(value || "").trim());
+    return Number.isNaN(parsed) ? 0 : parsed;
+  };
+
   const customerRequestList = useMemo(() => {
     return (groupedSessions?.customerRequest || [])
       .filter((item) => {
@@ -357,11 +390,10 @@ const EngineerSidebar = ({
         if (isAssistantLauncher(item)) return false;
         return true;
       })
-      .sort((a, b) => {
-        const aa = String(a?.lastActivityAt || a?.createdAt || "").trim();
-        const bb = String(b?.lastActivityAt || b?.createdAt || "").trim();
-        return bb.localeCompare(aa);
-      });
+      .sort(
+        (a, b) =>
+          getCustomerRequestSortTime(b) - getCustomerRequestSortTime(a)
+      );
   }, [groupedSessions]);
 
   const supplierTaskList = useMemo(() => {

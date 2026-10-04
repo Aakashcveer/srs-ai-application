@@ -12,7 +12,12 @@ import {
   loadSessionState,
   clearSessionState,
 } from "../../utils/Sessionstorage";
-import { initialiseChat, renameChat, createSession } from "../../api/api-config";
+import {
+  initialiseChat,
+  syncChatSession,
+  renameChat,
+  createSession,
+} from "../../api/api-config";
 
 import "./Chat.css";
 
@@ -132,7 +137,12 @@ const normalizeFormState = (state) => {
   return hasValidFormState(state) ? state : null;
 };
 
-const AUTO_REFRESH_INTERVAL_MS = 30000;
+// Performance branch realtime POC.
+// Keep a fallback URL so localhost works even before Amplify/env config is updated.
+const WEBSOCKET_URL = (
+  import.meta.env.VITE_WEBSOCKET_URL ||
+  "wss://pmtwm0gzsk.execute-api.ap-south-1.amazonaws.com/dev"
+).replace(/\/$/, "");
 
 const buildMessagesSignature = (items = []) => {
   if (!Array.isArray(items) || !items.length) return "empty";
@@ -158,6 +168,60 @@ const buildMessagesSignature = (items = []) => {
     .join("||");
 };
 
+const buildMessageMergeKey = (message = {}) => {
+  const role = String(message?.role || message?.sender || "").trim();
+  const text =
+    typeof message?.text === "string"
+      ? message.text
+      : typeof message?.content === "string"
+      ? message.content
+      : Array.isArray(message?.content) && message.content[0]?.text
+      ? message.content[0].text
+      : "";
+
+  const timestamp = String(
+    message?.timestamp ||
+      message?.createdAt ||
+      message?.Timestamp ||
+      message?.CreatedAt ||
+      ""
+  ).trim();
+
+  const artifactType = String(
+    message?.artifact?.type ||
+      message?.Artifact?.type ||
+      message?.eventType ||
+      message?.EventType ||
+      ""
+  ).trim();
+
+  return `${role}|${timestamp}|${artifactType}|${String(text).trim()}`;
+};
+
+const mergeUniqueMessages = (currentMessages = [], incomingMessages = []) => {
+  const merged = Array.isArray(currentMessages) ? [...currentMessages] : [];
+  const seen = new Set(merged.map(buildMessageMergeKey));
+
+  for (const message of Array.isArray(incomingMessages) ? incomingMessages : []) {
+    const key = buildMessageMergeKey(message);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(message);
+  }
+
+  return merged;
+};
+
+const isRequestMonitoringSessionId = (sessionId) => {
+  const sid = String(sessionId || "").trim().toLowerCase();
+
+  return (
+    sid === "request monitoring & status" ||
+    sid.includes("request monitoring") ||
+    sid.includes("monitoring & status")
+  );
+};
+
 const isAutoRefreshEligibleSession = (sessionId) => {
   const sid = String(sessionId || "").trim().toLowerCase();
 
@@ -166,6 +230,7 @@ const isAutoRefreshEligibleSession = (sessionId) => {
   if (sid === "default-chat") return false;
   if (sid === "new customer request") return false;
   if (sid === "new supplier request") return false;
+  if (isRequestMonitoringSessionId(sid)) return false;
 
   return true;
 };
@@ -209,6 +274,7 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [sessionMessagesMap, setSessionMessagesMap] = useState({});
+  const [loadingSessionId, setLoadingSessionId] = useState(null);
   const [showIdleWarning, setShowIdleWarning] = useState(false);
   const [idleSecondsLeft, setIdleSecondsLeft] = useState(null);
   const [formStateMap, setFormStateMap] = useState({});
@@ -222,7 +288,31 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
   const userEmailRef = useRef("");
   const messagesRef = useRef(messages);
   const formDirtyMapRef = useRef(formDirtyMap);
-  const isAutoRefreshingRef = useRef(false);
+
+  // Background request preloading:
+  // keep a live cache ref so the preload queue can skip sessions that are
+  // already available without forcing request navigation or UI changes.
+  const sessionMessagesMapRef = useRef(sessionMessagesMap);
+  const backgroundPreloadQueueRef = useRef([]);
+  const backgroundPreloadQueuedIdsRef = useRef(new Set());
+  const backgroundPreloadInFlightIdsRef = useRef(new Set());
+  const backgroundPreloadRunningRef = useRef(false);
+
+  // Reuse an in-flight /initialise request for the same user and session.
+  // This prevents rapid clicks from sending the same request at the same time.
+  const initialiseRequestsRef = useRef(new Map());
+
+  // Delta-sync state is tracked per session.
+  const syncCursorMapRef = useRef({});
+  const syncRequestVersionMapRef = useRef({});
+  const realtimeSyncRequestsRef = useRef(new Map());
+
+  // User-scoped WebSocket:
+  // - one live socket per logged-in browser/user
+  // - request changes travel as message payloads
+  // - non-active requests are marked dirty and synced when opened
+  const realtimeDirtySessionsRef = useRef(new Set());
+  const runRealtimeSyncRef = useRef(null);
 
   const role = String(user?.profile || user?.role || "")
     .toLowerCase()
@@ -245,12 +335,61 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
   }, [messages]);
 
   useEffect(() => {
+    sessionMessagesMapRef.current = sessionMessagesMap;
+  }, [sessionMessagesMap]);
+
+  useEffect(() => {
     formDirtyMapRef.current = formDirtyMap;
   }, [formDirtyMap]);
 
   useEffect(() => {
     localStorage.setItem("agentMode", "false");
   }, []);
+
+  const initialiseChatDeduped = (token, email, sessionId = null) => {
+    const normalizedEmail = String(email || "").trim().toLowerCase();
+    const normalizedSessionId =
+      sessionId === null || sessionId === undefined
+        ? "__initial__"
+        : String(sessionId).trim();
+
+    const requestKey = `${normalizedEmail}::${normalizedSessionId}`;
+    const existingRequest = initialiseRequestsRef.current.get(requestKey);
+
+    if (existingRequest) {
+      return existingRequest;
+    }
+
+    const request = initialiseChat(token, email, sessionId);
+    initialiseRequestsRef.current.set(requestKey, request);
+
+    const clearRequest = () => {
+      if (initialiseRequestsRef.current.get(requestKey) === request) {
+        initialiseRequestsRef.current.delete(requestKey);
+      }
+    };
+
+    request.then(clearRequest, clearRequest);
+
+    return request;
+  };
+
+  const rememberSyncState = (sessionId, data = {}) => {
+    if (!sessionId) return;
+
+    const cursor = String(data?.syncCursor || data?.cursor || "").trim();
+    const requestVersion = String(
+      data?.syncRequestVersion || data?.requestVersion || ""
+    ).trim();
+
+    if (cursor) {
+      syncCursorMapRef.current[sessionId] = cursor;
+    }
+
+    if (requestVersion) {
+      syncRequestVersionMapRef.current[sessionId] = requestVersion;
+    }
+  };
 
   const normalizeMessages = (rawMessages = []) =>
     rawMessages.map((m, i) => {
@@ -509,6 +648,65 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
     return [item, ...arr];
   };
 
+  const mergeSyncedSessionMeta = (meta) => {
+    if (!meta || typeof meta !== "object") return;
+
+    const sessionId = String(
+      meta?.sessionId || meta?.SessionId || meta?.taskId || meta?.TaskId || ""
+    ).trim();
+    if (!sessionId) return;
+
+    const upperId = sessionId.toUpperCase();
+    const sessionType = String(
+      meta?.sessionType || meta?.SessionType || meta?.kcSessionType || meta?.taskType || ""
+    )
+      .trim()
+      .toLowerCase();
+
+    const isSupplierMeta =
+      upperId.startsWith("TSKS") ||
+      upperId.startsWith("TSKE") ||
+      sessionType === "supplier task" ||
+      sessionType === "supplier request";
+
+    const normalizedMeta = {
+      ...meta,
+      sessionId,
+    };
+
+    setSessions((previous) => {
+      if (isSupplierMeta) {
+        return {
+          ...previous,
+          tasks: upsertBySessionId(previous?.tasks || [], normalizedMeta),
+          groupedSessions: {
+            myAssistant: [...(previous?.groupedSessions?.myAssistant || [])],
+            customerRequest: [
+              ...(previous?.groupedSessions?.customerRequest || []),
+            ],
+            supplierTask: upsertBySessionId(
+              previous?.groupedSessions?.supplierTask || [],
+              normalizedMeta
+            ),
+          },
+        };
+      }
+
+      return {
+        ...previous,
+        requests: upsertBySessionId(previous?.requests || [], normalizedMeta),
+        groupedSessions: {
+          myAssistant: [...(previous?.groupedSessions?.myAssistant || [])],
+          customerRequest: upsertBySessionId(
+            previous?.groupedSessions?.customerRequest || [],
+            normalizedMeta
+          ),
+          supplierTask: [...(previous?.groupedSessions?.supplierTask || [])],
+        },
+      };
+    });
+  };
+
   const findExistingSessionIdForChatType = (chatType) => {
     const assistantList = sessions?.groupedSessions?.myAssistant || [];
 
@@ -645,7 +843,8 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
       const token = await getAccessToken();
       if (!token || !user?.email) return;
 
-      const init = await initialiseChat(token, user.email, serverSessionId);
+      const init = await initialiseChatDeduped(token, user.email, serverSessionId);
+      rememberSyncState(serverSessionId, init);
 
       syncUserWithBackendProfile(user, init);
 
@@ -722,7 +921,8 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
 
   const openCustomerRequestStarter = async (targetSessionId = null) => {
     try {
-      const starterId = targetSessionId || getCustomerRequestHelperSessionId();
+      const starterId =
+        targetSessionId || getCustomerRequestHelperSessionId();
 
       setActiveSessionId(starterId);
       setMessages([]);
@@ -734,28 +934,15 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
       }));
 
       const prevState = loadSessionState();
+
       saveSessionState({
         activeSessionId: starterId,
         lastActivityAt: Date.now(),
         sessionStartedAt: prevState?.sessionStartedAt || Date.now(),
       });
 
-      if (!user?.email) return;
-
-      const token = await getAccessToken();
-      if (!token) return;
-
-      const data = await initialiseChat(token, user.email, starterId);
-
-      syncUserWithBackendProfile(user, data);
-      setSessions(normalizeSessionsPayload(data));
-
-      setMessages([]);
-      setFormForSession(starterId, null);
-      setSessionMessagesMap((prev) => ({
-        ...prev,
-        [starterId]: [],
-      }));
+      // No /initialise call is needed here.
+      // The session list is already available from the initial app load.
     } catch (e) {
       console.error("Failed to open customer request starter", e);
     }
@@ -796,7 +983,14 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
         sessionStartedAt: prevState?.sessionStartedAt || Date.now(),
       });
 
-      const data = await initialiseChat(token, user.email, newId);
+      // Request Monitoring uses the dedicated lightweight GET /status endpoint
+      // inside ChatWindow. Do not load the full /initialise payload here.
+      if (chatType === "REQUEST_MONITORING_STATUS") {
+        return;
+      }
+
+      const data = await initialiseChatDeduped(token, user.email, newId);
+      rememberSyncState(newId, data);
       const normalized = normalizeMessages(data.messages || []);
 
       syncUserWithBackendProfile(user, data);
@@ -824,7 +1018,7 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
         const safeRequestedId =
           requestedId && requestedId.startsWith("temp-") ? null : requestedId;
 
-        const data = await initialiseChat(token, profile.email, safeRequestedId);
+        const data = await initialiseChatDeduped(token, profile.email, safeRequestedId);
 
         syncUserWithBackendProfile(profile, data);
 
@@ -844,6 +1038,8 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
             : "";
 
         const sid = engineerLandingSessionId || data.activeSessionId || null;
+        if (sid) rememberSyncState(sid, data);
+
         const normalized = engineerLandingSessionId
           ? []
           : normalizeMessages(data.messages || []);
@@ -885,71 +1081,305 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
   }, []);
 
 
-  useEffect(() => {
-    if (!activeSessionId || !user?.email) return;
-    if (!isAutoRefreshEligibleSession(activeSessionId)) return;
-    if (isCustomerRequestHelperSessionId(activeSessionId)) return;
+  // ===============================
+  // ✅ REALTIME WEBSOCKET -> DELTA SYNC
+  // WebSocket carries only a small SESSION_UPDATED notification.
+  // Actual authorized data is then fetched from POST /sync-test.
+  // Full 30-second /initialise polling has been removed on this performance branch.
+  // WebSocket reconnect calls /sync-test once to recover missed updates.
+  // ===============================
+  const runRealtimeSync = async (sessionId, trigger = "websocket") => {
+    const latestSessionId = String(sessionId || "").trim();
+    const latestUserEmail = String(userEmailRef.current || "").trim();
 
-    const refreshActiveSessionFromBackend = async () => {
-      const latestSessionId = activeSessionIdRef.current;
-      const latestUserEmail = userEmailRef.current;
+    if (!latestSessionId || !latestUserEmail) return null;
+    if (!isAutoRefreshEligibleSession(latestSessionId)) return null;
+    if (isCustomerRequestHelperSessionId(latestSessionId)) return null;
 
-      if (!latestSessionId || !latestUserEmail) return;
-      if (!isAutoRefreshEligibleSession(latestSessionId)) return;
-      if (isCustomerRequestHelperSessionId(latestSessionId)) return;
-      if (document.visibilityState === "hidden") return;
-      if (isAutoRefreshingRef.current) return;
+    const requestKey = `${latestUserEmail.toLowerCase()}::${latestSessionId}`;
+    const existingRequest = realtimeSyncRequestsRef.current.get(requestKey);
+    if (existingRequest) return existingRequest;
 
-      isAutoRefreshingRef.current = true;
-
+    const request = (async () => {
       try {
         const token = await getAccessToken();
-        if (!token) return;
+        if (!token) return null;
 
-        const data = await initialiseChat(token, latestUserEmail, latestSessionId);
-        const normalized = normalizeMessages(data.messages || []);
+        const data = await syncChatSession(
+          token,
+          latestUserEmail,
+          latestSessionId,
+          syncCursorMapRef.current?.[latestSessionId] || "",
+          syncRequestVersionMapRef.current?.[latestSessionId] || ""
+        );
 
-        syncUserWithBackendProfile(user, data);
-        setSessions(normalizeSessionsPayload(data));
+        rememberSyncState(latestSessionId, data);
+
+        // Ignore UI application if the user changed sessions while sync was running.
+        if (activeSessionIdRef.current !== latestSessionId) return data;
+
+        if (data?.requestMeta) {
+          mergeSyncedSessionMeta(data.requestMeta);
+        }
 
         const activeFormIsDirty = Boolean(
           formDirtyMapRef.current?.[latestSessionId]
         );
 
-        // Never replace an unsaved form with the older backend formState returned
-        // by /initialise. Messages/status can still refresh in the background.
         if (data?.formState && !activeFormIsDirty) {
           setFormForSession(latestSessionId, data.formState);
         }
 
-        if (!normalized.length) return;
+        const incomingMessages = normalizeMessages([
+          ...(Array.isArray(data?.messages) ? data.messages : []),
+          ...(Array.isArray(data?.snapshotMessages)
+            ? data.snapshotMessages
+            : []),
+        ]);
 
-        const currentSignature = buildMessagesSignature(messagesRef.current);
-        const nextSignature = buildMessagesSignature(normalized);
+        if (data?.replaceMessages) {
+          const currentSignature = buildMessagesSignature(messagesRef.current);
+          const nextSignature = buildMessagesSignature(incomingMessages);
 
-        if (currentSignature !== nextSignature) {
-          setMessages(normalized);
-          messagesRef.current = normalized;
+          if (currentSignature !== nextSignature) {
+            setMessages(incomingMessages);
+            messagesRef.current = incomingMessages;
+            setSessionMessagesMap((previous) => ({
+              ...previous,
+              [latestSessionId]: incomingMessages,
+            }));
+          }
+        } else if (incomingMessages.length) {
+          const mergedMessages = mergeUniqueMessages(
+            messagesRef.current,
+            incomingMessages
+          );
 
-          setSessionMessagesMap((prev) => ({
-            ...prev,
-            [latestSessionId]: normalized,
-          }));
+          const currentSignature = buildMessagesSignature(messagesRef.current);
+          const nextSignature = buildMessagesSignature(mergedMessages);
+
+          if (currentSignature !== nextSignature) {
+            setMessages(mergedMessages);
+            messagesRef.current = mergedMessages;
+            setSessionMessagesMap((previous) => ({
+              ...previous,
+              [latestSessionId]: mergedMessages,
+            }));
+          }
         }
-      } catch (err) {
-        console.warn("Auto refresh active session failed", err);
-      } finally {
-        isAutoRefreshingRef.current = false;
+
+        console.log("✅ Realtime delta sync complete", {
+          trigger,
+          sessionId: latestSessionId,
+          messageCount: Array.isArray(data?.messages) ? data.messages.length : 0,
+          hasMore: Boolean(data?.hasMore),
+        });
+
+        return data;
+      } catch (error) {
+        console.warn("Realtime delta sync failed", {
+          trigger,
+          sessionId: latestSessionId,
+          error,
+        });
+        return null;
+      }
+    })();
+
+    realtimeSyncRequestsRef.current.set(requestKey, request);
+
+    const clearRequest = () => {
+      if (realtimeSyncRequestsRef.current.get(requestKey) === request) {
+        realtimeSyncRequestsRef.current.delete(requestKey);
       }
     };
 
-    const interval = setInterval(
-      refreshActiveSessionFromBackend,
-      AUTO_REFRESH_INTERVAL_MS
-    );
+    request.then(clearRequest, clearRequest);
+    return request;
+  };
 
-    return () => clearInterval(interval);
-  }, [activeSessionId, user?.email]);
+  // Always expose the latest sync implementation to the long-lived WebSocket
+  // handlers. This avoids reconnecting the socket just because React re-rendered.
+  runRealtimeSyncRef.current = runRealtimeSync;
+
+  useEffect(() => {
+    if (!user?.email) return undefined;
+
+    const email = String(user.email).trim();
+    if (!email) return undefined;
+
+    let disposed = false;
+    let socket = null;
+    let reconnectTimer = null;
+    let reconnectAttempt = 0;
+
+    const connectWebSocket = () => {
+      if (disposed) return;
+
+      const separator = WEBSOCKET_URL.includes("?") ? "&" : "?";
+
+      // USER-SCOPED CONNECTION:
+      // The WebSocket belongs to the logged-in browser/user, not to one RequestId.
+      // POC note: userEmail is still passed as a query parameter because the
+      // current $connect route is not yet using production authentication.
+      const socketUrl =
+        `${WEBSOCKET_URL}${separator}` +
+        `userEmail=${encodeURIComponent(email)}`;
+
+      try {
+        socket = new WebSocket(socketUrl);
+      } catch (error) {
+        console.warn("WebSocket creation failed", error);
+        return;
+      }
+
+      socket.onopen = () => {
+        if (disposed) return;
+
+        reconnectAttempt = 0;
+
+        const currentSessionId = String(
+          activeSessionIdRef.current || ""
+        ).trim();
+
+        console.log("✅ User-scoped realtime WebSocket connected", {
+          userEmail: email,
+          activeSessionId: currentSessionId,
+        });
+
+        // Recover anything written while the socket was disconnected.
+        // Only the currently open eligible request needs an immediate sync.
+        if (
+          currentSessionId &&
+          isAutoRefreshEligibleSession(currentSessionId)
+        ) {
+          runRealtimeSyncRef.current?.(
+            currentSessionId,
+            "websocket-open"
+          );
+        }
+      };
+
+      socket.onmessage = (event) => {
+        if (disposed) return;
+
+        try {
+          const payload = JSON.parse(event.data || "{}");
+
+          const messageType = String(
+            payload?.type || ""
+          ).trim();
+
+          const messageSessionId = String(
+            payload?.sessionId ||
+              payload?.SessionId ||
+              payload?.requestSessionId ||
+              ""
+          ).trim();
+
+          if (
+            messageType !== "SESSION_UPDATED" &&
+            messageType !== "REQUEST_UPDATED"
+          ) {
+            return;
+          }
+
+          if (!messageSessionId) {
+            console.warn(
+              "Ignoring realtime notification without sessionId",
+              payload
+            );
+            return;
+          }
+
+          const currentActiveSessionId = String(
+            activeSessionIdRef.current || ""
+          ).trim();
+
+          console.log("📩 Realtime request update received", {
+            changedSessionId: messageSessionId,
+            activeSessionId: currentActiveSessionId,
+            updateType: payload?.updateType || "",
+          });
+
+          if (messageSessionId === currentActiveSessionId) {
+            // The request currently visible on screen changed.
+            // Pull only the delta immediately.
+            realtimeDirtySessionsRef.current.delete(messageSessionId);
+
+            runRealtimeSyncRef.current?.(
+              messageSessionId,
+              payload?.updateType || messageType
+            );
+            return;
+          }
+
+          // A DIFFERENT request changed while the user is working elsewhere.
+          // Do not switch the user's screen and do not fetch a potentially large
+          // first sync in the background. Mark it dirty; when the user opens it,
+          // handleSessionClick() will run a delta sync before treating cache as fresh.
+          realtimeDirtySessionsRef.current.add(messageSessionId);
+
+          console.log("🔔 Inactive request marked for realtime sync", {
+            sessionId: messageSessionId,
+            updateType: payload?.updateType || "",
+          });
+        } catch (error) {
+          console.warn("Ignoring invalid WebSocket message", error);
+        }
+      };
+
+      socket.onerror = (error) => {
+        if (!disposed) {
+          console.warn("Realtime WebSocket error", error);
+        }
+      };
+
+      socket.onclose = () => {
+        if (disposed) return;
+
+        const delayMs = Math.min(
+          1000 * 2 ** reconnectAttempt,
+          10000
+        );
+        reconnectAttempt += 1;
+
+        console.warn(
+          `Realtime WebSocket closed; reconnecting in ${delayMs}ms`
+        );
+
+        reconnectTimer = setTimeout(
+          connectWebSocket,
+          delayMs
+        );
+      };
+    };
+
+    connectWebSocket();
+
+    return () => {
+      disposed = true;
+
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+      }
+
+      if (socket) {
+        socket.onopen = null;
+        socket.onmessage = null;
+        socket.onerror = null;
+        socket.onclose = null;
+
+        if (
+          socket.readyState === WebSocket.OPEN ||
+          socket.readyState === WebSocket.CONNECTING
+        ) {
+          socket.close();
+        }
+      }
+    };
+  }, [user?.email]);
+
 
   useEffect(() => {
     if (!activeSessionId) return;
@@ -1235,17 +1665,86 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
 
   const handleSessionClick = async (sessionId) => {
     try {
+      if (!sessionId) return;
+
       if (isCustomerRequestHelperSessionId(sessionId)) {
+        setLoadingSessionId(null);
         await openCustomerRequestStarter(sessionId);
         return;
       }
 
-      setMessages([]);
-      setActiveSessionId(sessionId);
+      // Request Monitoring is a lightweight dashboard, not a chat-history load.
+      // Reuse its cached dashboard immediately and let ChatWindow refresh it
+      // through GET /status without calling the full /initialise endpoint.
+      if (isRequestMonitoringSessionId(sessionId)) {
+        setLoadingSessionId(null);
+        setActiveSessionId(sessionId);
 
-      if (sessionMessagesMap[sessionId]) {
-        setMessages(sessionMessagesMap[sessionId]);
+        // Never restore old monitoring chat messages such as "get status".
+        setMessages([]);
+
+        setSessionMessagesMap((previous) => ({
+          ...previous,
+          [sessionId]: [],
+        }));
+
+        setFormForSession(sessionId, null);
+
+        const previousState = loadSessionState();
+        saveSessionState({
+          activeSessionId: sessionId,
+          lastActivityAt: Date.now(),
+          sessionStartedAt:
+            previousState?.sessionStartedAt || Date.now(),
+        });
+
+        return;
       }
+
+      setActiveSessionId(sessionId);
+      activeSessionIdRef.current = sessionId;
+
+      const hasCachedSession = Object.prototype.hasOwnProperty.call(
+        sessionMessagesMap,
+        sessionId
+      );
+
+      const cachedMessages = hasCachedSession
+        ? sessionMessagesMap[sessionId]
+        : null;
+
+      // Cache-first navigation:
+      // Show already loaded data immediately and avoid another full /initialise.
+      // Realtime WebSocket + /sync-test will fetch backend changes.
+      if (hasCachedSession && Array.isArray(cachedMessages)) {
+        setLoadingSessionId(null);
+        setMessages(cachedMessages);
+
+        const previousState = loadSessionState();
+
+        saveSessionState({
+          activeSessionId: sessionId,
+          lastActivityAt: Date.now(),
+          sessionStartedAt:
+            previousState?.sessionStartedAt || Date.now(),
+        });
+
+        // If this request changed in the backend while another request was open,
+        // keep cache-first navigation but refresh the delta immediately after open.
+        if (realtimeDirtySessionsRef.current.has(sessionId)) {
+          runRealtimeSync(sessionId, "open-dirty-session").then((data) => {
+            if (data) {
+              realtimeDirtySessionsRef.current.delete(sessionId);
+            }
+          });
+        }
+
+        return;
+      }
+
+      // Session has never been loaded in this browser session.
+      setLoadingSessionId(sessionId);
+      setMessages([]);
 
       const token = await getAccessToken();
       if (!token || !user) return;
@@ -1256,11 +1755,12 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
         ...(sessions?.groupedSessions?.myAssistant || []),
         ...(sessions?.groupedSessions?.customerRequest || []),
         ...(sessions?.groupedSessions?.supplierTask || []),
-      ].find((r) => r.sessionId === sessionId);
+      ].find((item) => item.sessionId === sessionId);
 
-      const existingFormState = formStateMap?.[sessionId] || null;
-
-      if (selectedRequestMeta && isSupplierTaskMeta(selectedRequestMeta)) {
+      if (
+        selectedRequestMeta &&
+        isSupplierTaskMeta(selectedRequestMeta)
+      ) {
         const supplierFallback = buildSupplierTaskFallbackMessages(
           sessionId,
           selectedRequestMeta
@@ -1268,23 +1768,35 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
 
         if (supplierFallback.length) {
           setMessages(supplierFallback);
-          setSessionMessagesMap((prev) => ({
-            ...prev,
+
+          setSessionMessagesMap((previous) => ({
+            ...previous,
             [sessionId]: supplierFallback,
           }));
         }
       }
 
-      const data = await initialiseChat(token, user.email, sessionId);
+      const data = await initialiseChatDeduped(
+        token,
+        user.email,
+        sessionId
+      );
+      rememberSyncState(sessionId, data);
+      realtimeDirtySessionsRef.current.delete(sessionId);
+
       const normalized = normalizeMessages(data.messages || []);
 
       syncUserWithBackendProfile(user, data);
       setSessions(normalizeSessionsPayload(data));
 
-      const existingFormStateForSession = formStateMap?.[sessionId] || null;
+      const existingFormStateForSession =
+        formStateMap?.[sessionId] || null;
+
       setFormForSession(
         sessionId,
-        data?.formState || existingFormStateForSession || null
+        data?.formState ||
+          existingFormStateForSession ||
+          null
       );
 
       if (
@@ -1292,18 +1804,26 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
         selectedRequestMeta &&
         isBusinessOnlyRequestRow(selectedRequestMeta)
       ) {
-        const fallback = buildBusinessRequestFallbackMessages(sessionId);
+        const fallback =
+          buildBusinessRequestFallbackMessages(sessionId);
+
         setMessages(fallback);
-        setSessionMessagesMap((prev) => ({
-          ...prev,
+
+        setSessionMessagesMap((previous) => ({
+          ...previous,
           [sessionId]: fallback,
         }));
+
         return;
       }
 
       const supplierFallback =
-        selectedRequestMeta && isSupplierTaskMeta(selectedRequestMeta)
-          ? buildSupplierTaskFallbackMessages(sessionId, selectedRequestMeta)
+        selectedRequestMeta &&
+        isSupplierTaskMeta(selectedRequestMeta)
+          ? buildSupplierTaskFallbackMessages(
+              sessionId,
+              selectedRequestMeta
+            )
           : [];
 
       const finalMessages =
@@ -1311,19 +1831,214 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
           ? normalized
           : supplierFallback.length > 0
           ? supplierFallback
-          : sessionMessagesMap[sessionId] || [];
+          : [];
 
       setMessages(finalMessages);
-      setSessionMessagesMap((prev) => ({
-        ...prev,
+
+      setSessionMessagesMap((previous) => ({
+        ...previous,
         [sessionId]: finalMessages,
       }));
-    } catch (err) {
-      console.error("Failed to load history", err);
+    } catch (error) {
+      console.error("Failed to load history", error);
       setMessages([]);
       setFormForSession(sessionId, null);
+    } finally {
+      setLoadingSessionId((current) =>
+        current === sessionId ? null : current
+      );
     }
   };
+
+
+  // ============================================================
+  // BACKGROUND CUSTOMER REQUEST PRELOAD
+  //
+  // KC requirement:
+  // - login/landing page remains immediately usable
+  // - customer requests are loaded quietly in sidebar order
+  // - clicking a preloaded request opens from sessionMessagesMap instantly
+  // - clicking a request that is not ready yet still uses the normal loader
+  //
+  // Keep this sequential (one request at a time) so login does not create
+  // a burst of /initialise calls.
+  // ============================================================
+  useEffect(() => {
+    const email = String(user?.email || "").trim();
+    if (!email) return undefined;
+
+    const requestRows =
+      Array.isArray(sessions?.requests) && sessions.requests.length > 0
+        ? sessions.requests
+        : Array.isArray(sessions?.groupedSessions?.customerRequest)
+        ? sessions.groupedSessions.customerRequest
+        : [];
+
+    if (!requestRows.length) return undefined;
+
+    // Preserve the same order supplied to the sidebar.
+    // Only real Customer Request sessions are background-preloaded.
+    for (const requestMeta of requestRows) {
+      const sessionId = String(
+        requestMeta?.sessionId || requestMeta?.SessionId || ""
+      ).trim();
+
+      if (!sessionId) continue;
+      if (!sessionId.toUpperCase().startsWith("REQC#")) continue;
+      if (!isAutoRefreshEligibleSession(sessionId)) continue;
+      if (isCustomerRequestHelperSessionId(sessionId)) continue;
+
+      const alreadyCached = Object.prototype.hasOwnProperty.call(
+        sessionMessagesMapRef.current,
+        sessionId
+      );
+
+      if (alreadyCached) continue;
+      if (backgroundPreloadQueuedIdsRef.current.has(sessionId)) continue;
+      if (backgroundPreloadInFlightIdsRef.current.has(sessionId)) continue;
+
+      backgroundPreloadQueueRef.current.push({
+        sessionId,
+        requestMeta,
+      });
+      backgroundPreloadQueuedIdsRef.current.add(sessionId);
+    }
+
+    if (!backgroundPreloadQueueRef.current.length) return undefined;
+
+    const drainBackgroundPreloadQueue = async () => {
+      if (backgroundPreloadRunningRef.current) return;
+
+      backgroundPreloadRunningRef.current = true;
+
+      try {
+        const token = await getAccessToken();
+        if (!token) return;
+
+        while (backgroundPreloadQueueRef.current.length > 0) {
+          const nextItem = backgroundPreloadQueueRef.current.shift();
+          const sessionId = String(nextItem?.sessionId || "").trim();
+          const requestMeta = nextItem?.requestMeta || null;
+
+          if (!sessionId) continue;
+
+          backgroundPreloadQueuedIdsRef.current.delete(sessionId);
+
+          // The user may have opened this request while it was waiting in the
+          // background queue. If so, the normal click flow already cached it.
+          if (
+            Object.prototype.hasOwnProperty.call(
+              sessionMessagesMapRef.current,
+              sessionId
+            )
+          ) {
+            continue;
+          }
+
+          if (backgroundPreloadInFlightIdsRef.current.has(sessionId)) {
+            continue;
+          }
+
+          backgroundPreloadInFlightIdsRef.current.add(sessionId);
+
+          try {
+            // initialiseChatDeduped also protects us if the user clicks the
+            // same request while this background request is already in flight.
+            const data = await initialiseChatDeduped(
+              token,
+              email,
+              sessionId
+            );
+
+            rememberSyncState(sessionId, data);
+
+            const normalized = normalizeMessages(data?.messages || []);
+
+            let finalMessages = normalized;
+
+            // Preserve the same fallback behavior used by handleSessionClick()
+            // for a business-only customer request row.
+            if (
+              !finalMessages.length &&
+              requestMeta &&
+              isBusinessOnlyRequestRow(requestMeta)
+            ) {
+              finalMessages =
+                buildBusinessRequestFallbackMessages(sessionId);
+            }
+
+            // Do not overwrite a session that the user loaded/updated while
+            // this background request was running.
+            setSessionMessagesMap((previous) => {
+              if (
+                Object.prototype.hasOwnProperty.call(previous, sessionId)
+              ) {
+                sessionMessagesMapRef.current = previous;
+                return previous;
+              }
+
+              const next = {
+                ...previous,
+                [sessionId]: finalMessages,
+              };
+
+              sessionMessagesMapRef.current = next;
+              return next;
+            });
+
+            // Cache form state too, otherwise a preloaded request could have
+            // messages available but miss its saved workflow/form state.
+            if (
+              data?.formState &&
+              !formDirtyMapRef.current?.[sessionId]
+            ) {
+              setFormForSession(sessionId, data.formState);
+            }
+
+            console.log("✅ Background request preload complete", {
+              sessionId,
+              messageCount: finalMessages.length,
+            });
+          } catch (error) {
+            // A failed background preload must never break login/navigation.
+            // If the user clicks this request later, the normal loader +
+            // handleSessionClick path will still fetch it.
+            console.warn("Background request preload failed", {
+              sessionId,
+              error,
+            });
+          } finally {
+            backgroundPreloadInFlightIdsRef.current.delete(sessionId);
+          }
+        }
+      } finally {
+        backgroundPreloadRunningRef.current = false;
+
+        // If a sessions update added more work during the tiny window where
+        // this queue was finishing, drain that work as well.
+        if (backgroundPreloadQueueRef.current.length > 0) {
+          setTimeout(() => {
+            void drainBackgroundPreloadQueue();
+          }, 0);
+        }
+      }
+    };
+
+    // Give the landing page a short head start so preloading never blocks
+    // the first visible render after login.
+    const preloadStartTimer = setTimeout(() => {
+      void drainBackgroundPreloadQueue();
+    }, 300);
+
+    return () => {
+      clearTimeout(preloadStartTimer);
+    };
+  }, [
+    user?.email,
+    sessions?.requests,
+    sessions?.groupedSessions?.customerRequest,
+  ]);
+
 
   const handleOpenRequestFromStatusTable = (customerPartNumber) => {
     if (!customerPartNumber) return;
@@ -1587,6 +2302,7 @@ const Chat = ({ theme, toggleTheme, onLogout }) => {
           requestStatus: activeBackendRequestStatus,
           requestMeta: activeBackendRequestMeta,
         }}
+        isSessionLoading={loadingSessionId === activeSessionId}
         updateMessages={(updater) => updateMessages(activeSessionId, updater)}
         user={user}
         onFirstMessage={handleAutoRename}

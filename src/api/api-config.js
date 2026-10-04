@@ -12,6 +12,14 @@ export const API_BASE_URL = (
   "https://mfdhqhocm4.execute-api.ap-south-1.amazonaws.com"
 ).replace(/\/$/, "");
 
+// Performance branch only:
+// Separate lightweight delta-sync API.
+// Existing main chat API remains untouched.
+export const SYNC_API_BASE_URL = (
+  import.meta.env.VITE_SYNC_API_BASE_URL ||
+  "https://bndfa1apq2.execute-api.ap-south-1.amazonaws.com"
+).replace(/\/$/, "");
+
 // Report Delivery API.
 // If the /report routes are deployed on a separate API Gateway, set
 // VITE_REPORT_DELIVERY_API_BASE_URL in Amplify/frontend env.
@@ -44,6 +52,10 @@ export const ENDPOINTS = {
   fmdAssessment: `${API_BASE_URL}/fmd-assessment`,
 
   initialise: `${API_BASE_URL}/initialise`,
+
+  // Performance branch delta sync test API
+  syncTest: `${SYNC_API_BASE_URL}/sync-test`,
+
   rename: `${API_BASE_URL}/rename`,
   delete: `${API_BASE_URL}/delete`,
 
@@ -84,8 +96,9 @@ export const ENDPOINTS = {
   assessmentEmailGenerate: `${API_BASE_URL}/assessment/email/generate`,
 
   // ✅ REPORT DELIVERY CUSTOMER FLOW
-  // Internal engineer action:
+  // Internal engineer actions:
   reportSendSecureLink: `${REPORT_DELIVERY_API_BASE_URL}/report/send-secure-link`,
+  reportCloseRequest: `${REPORT_DELIVERY_API_BASE_URL}/report/close-request`,
 
   // Public customer portal actions:
   reportValidateToken: `${REPORT_DELIVERY_API_BASE_URL}/report/validate-token`,
@@ -1160,6 +1173,74 @@ export const initialiseChat = async (token, email, sessionId = null) => {
 };
 
 // ===============================
+// ✅ DELTA SYNC TEST
+// POST /sync-test on the separate performance-test API.
+// Returns only conversation rows after Cursor plus lightweight latest state.
+// Existing /initialise behavior remains unchanged.
+// ===============================
+export const syncChatSession = async (
+  token,
+  email,
+  sessionId,
+  cursor = "",
+  requestVersion = "",
+  limit = 200
+) => {
+  assertToken(token);
+  if (!email) throw new Error("Email is required");
+  if (!sessionId) throw new Error("SessionId is required");
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_STANDARD);
+
+  try {
+    const response = await fetch(ENDPOINTS.syncTest, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        userEmail: email,
+        session: {
+          UserId: email,
+          SessionId: sessionId,
+          Cursor: cursor || "",
+          RequestVersion: requestVersion || "",
+          Limit: Math.min(Math.max(Number(limit) || 200, 1), 500),
+        },
+      }),
+      signal: controller.signal,
+    });
+
+    const { text, data } = await parseJsonSafe(response);
+
+    if (!response.ok) {
+      throw new Error(
+        data?.error ||
+          data?.message ||
+          text ||
+          `Session sync failed (${response.status})`
+      );
+    }
+
+    return {
+      ...data,
+      requestMeta: data?.requestMeta
+        ? normalizeCustomerRequestItem(data.requestMeta)
+        : null,
+    };
+  } catch (error) {
+    if (String(error?.name).includes("AbortError")) {
+      throw new Error("REQUEST_TIMEOUT");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+// ===============================
 // RENAME CHAT
 // ===============================
 export const renameChat = async (token, userEmail, sessionId, title) => {
@@ -1912,6 +1993,79 @@ export const sendSecureReportLink = async (
           data?.message ||
           text ||
           `Send secure report link failed (${res.status})`
+      );
+    }
+
+    return data;
+  } catch (e) {
+    if (String(e?.name).includes("AbortError")) {
+      throw new Error("REQUEST_TIMEOUT");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+
+// ===============================
+// ✅ ENGINEER CLOSE REQUEST
+// POST /report/close-request
+// Allowed only after the customer has downloaded the report at least once.
+// ===============================
+export const closeReportRequest = async (
+  { sessionId = "", userId = "", requestId = "" } = {},
+  token
+) => {
+  assertToken(token);
+
+  const cleanSessionId = asString(sessionId);
+  const cleanUserId = asString(userId);
+  const cleanRequestId = asString(requestId);
+
+  if (!cleanRequestId) throw new Error("requestId is required");
+  if (!cleanSessionId) throw new Error("sessionId is required");
+  if (!cleanUserId) throw new Error("userId is required");
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_STANDARD);
+
+  try {
+    const payload = {
+      requestId: cleanRequestId,
+      RequestId: cleanRequestId,
+      sessionId: cleanSessionId,
+      SessionId: cleanSessionId,
+      userId: cleanUserId,
+      UserId: cleanUserId,
+    };
+
+    const res = await fetch(ENDPOINTS.reportCloseRequest, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        session: {
+          SessionId: cleanSessionId,
+          UserId: cleanUserId,
+          RequestId: cleanRequestId,
+        },
+        payload,
+        ...payload,
+      }),
+      signal: controller.signal,
+    });
+
+    const { text, data } = await parseJsonSafe(res);
+
+    if (!res.ok) {
+      throw new Error(
+        data?.error ||
+          data?.message ||
+          text ||
+          `Close request failed (${res.status})`
       );
     }
 

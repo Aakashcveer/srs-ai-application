@@ -31,6 +31,7 @@ import {
   confirmFileUploadAndType,
   saveGeneratedForm,
   searchCustomerRequests,
+  getRequestMonitoringStatus,
   sendCustomerEmail,
   saveEmailDraft,
   processCustomerReply,
@@ -39,6 +40,7 @@ import {
   presignAssessmentReportPdf,
   generateAssessmentCustomerEmail,
   sendSecureReportLink,
+  closeReportRequest,
   uploadSupplierTaskFile,
   submitSupplierTaskForReview,
   downloadSupplierTaskFile,
@@ -393,6 +395,7 @@ const WORKFLOW_STATUS_ORDER = [
   "RESULTS-SUBMITTED",
   "REPORT-GENERATED",
   "REPORT-DELIVERY",
+  "REPORT-DOWNLOADED",
   "REQUEST-CLOSED",
 ];
 
@@ -790,14 +793,6 @@ const getReportDeliveryMessageStatus = (message = {}) => {
   const artifact = message?.artifact || message?.Artifact || {};
   const eventType = getReportDeliveryEventType(message);
 
-  if (eventType === "REPORT_DOWNLOADED" || eventType === "REPORT_FEEDBACK_SUBMITTED") {
-    return "REQUEST-CLOSED";
-  }
-
-  if (eventType === "REPORT_LINK_SENT") {
-    return "REPORT-DELIVERY";
-  }
-
   const directStatus = normalizeWorkflowStatus(
     message?.RequestStatus ||
       message?.requestStatus ||
@@ -810,7 +805,27 @@ const getReportDeliveryMessageStatus = (message = {}) => {
       ""
   );
 
-  if (directStatus === "REQUEST-CLOSED" || directStatus === "REPORT-DELIVERY") {
+  // Preserve a real explicit closed state (including historical requests).
+  // A download/feedback event by itself must no longer close the request.
+  if (directStatus === "REQUEST-CLOSED") {
+    return "REQUEST-CLOSED";
+  }
+
+  if (
+    eventType === "REPORT_DOWNLOADED" ||
+    eventType === "REPORT_FEEDBACK_SUBMITTED"
+  ) {
+    return "REPORT-DOWNLOADED";
+  }
+
+  if (eventType === "REPORT_LINK_SENT") {
+    return "REPORT-DELIVERY";
+  }
+
+  if (
+    directStatus === "REPORT-DOWNLOADED" ||
+    directStatus === "REPORT-DELIVERY"
+  ) {
     return directStatus;
   }
 
@@ -825,6 +840,13 @@ const getReportDeliveryMessageStatus = (message = {}) => {
     .toLowerCase();
 
   if (text.includes("request-closed")) return "REQUEST-CLOSED";
+  if (
+    text.includes("report-downloaded") ||
+    text.includes("report download recorded") ||
+    text.includes("customer downloaded the secure assessment report")
+  ) {
+    return "REPORT-DOWNLOADED";
+  }
   if (text.includes("report-delivery")) return "REPORT-DELIVERY";
 
   return "";
@@ -833,10 +855,16 @@ const getReportDeliveryMessageStatus = (message = {}) => {
 const extractFinalReportDeliveryStatusFromMessages = (messages = []) => {
   const list = Array.isArray(messages) ? messages : [];
 
-  // Prefer final closed state if any customer portal event reached download/feedback.
+  // Explicit engineer/system closed state wins if it is actually present.
   for (let i = list.length - 1; i >= 0; i -= 1) {
     const status = getReportDeliveryMessageStatus(list[i]);
     if (status === "REQUEST-CLOSED") return "REQUEST-CLOSED";
+  }
+
+  // Customer download (with or without survey) keeps the request open.
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    const status = getReportDeliveryMessageStatus(list[i]);
+    if (status === "REPORT-DOWNLOADED") return "REPORT-DOWNLOADED";
   }
 
   for (let i = list.length - 1; i >= 0; i -= 1) {
@@ -1011,6 +1039,62 @@ const cleanRequestMonitoringDashboardText = (text = "") => {
   });
 
   return cleaned.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+};
+
+
+const escapeRequestMonitoringTableCell = (value = "") => {
+  const clean = String(value ?? "")
+    .replace(/\r?\n/g, " ")
+    .replace(/\|/g, "\\|")
+    .trim();
+
+  return clean || "-";
+};
+
+const buildRequestMonitoringDashboardText = (items = []) => {
+  const rows = Array.isArray(items) ? items : [];
+
+  if (!rows.length) {
+    return "## 📊 Request Monitoring Dashboard\n\nNo request status data found.";
+  }
+
+  const lines = [
+    "| Request | Current Status | Customer Part | Risk | Assessment | Next Action |",
+    "|---|---|---|---|---|---|",
+  ];
+
+  rows.forEach((row) => {
+    const requestId = escapeRequestMonitoringTableCell(
+      row?.requestId || row?.id || row?.sessionId
+    );
+    const requestStatus = escapeRequestMonitoringTableCell(
+      row?.requestStatus
+    );
+    const partNumber = escapeRequestMonitoringTableCell(
+      row?.customerPartNumber
+    );
+    const partName = escapeRequestMonitoringTableCell(
+      row?.customerPartName
+    );
+    const riskLevel = escapeRequestMonitoringTableCell(row?.riskLevel);
+    const assessmentReadiness = escapeRequestMonitoringTableCell(
+      row?.assessmentReadiness
+    );
+    const nextAction = escapeRequestMonitoringTableCell(
+      row?.recommendedNextTask
+    );
+
+    const customerPart =
+      partName !== "-"
+        ? `${partNumber} — ${partName}`
+        : partNumber;
+
+    lines.push(
+      `| ${requestId} | ${requestStatus} | ${customerPart} | ${riskLevel} | ${assessmentReadiness} | ${nextAction} |`
+    );
+  });
+
+  return lines.join("\n");
 };
 
 
@@ -1206,6 +1290,44 @@ const getMessageEmailDraft = (message = {}) => {
 
   return null;
 };
+
+const isCustomerRequestEmailDraftMessage = (message = {}) => {
+  const draft = getMessageEmailDraft(message);
+  if (!draft) return false;
+
+  const artifact = message?.artifact || message?.Artifact || {};
+  const kind = String(
+    draft?.emailKind ||
+      draft?.kind ||
+      artifact?.emailKind ||
+      artifact?.kind ||
+      ""
+  )
+    .trim()
+    .toLowerCase();
+
+  const isAssessmentDraft =
+    kind === "assessment_report_customer_email" ||
+    Boolean(draft?.secureReportDelivery) ||
+    Boolean(draft?.attachAssessmentPdf) ||
+    Boolean(draft?.assessmentReportS3Path) ||
+    Boolean(draft?.reportS3Path);
+
+  const isSupplierDraft =
+    kind.includes("supplier") ||
+    Boolean(draft?.isSupplierEmail) ||
+    Boolean(artifact?.isSupplierEmail);
+
+  if (isAssessmentDraft || isSupplierDraft) return false;
+
+  return (
+    kind === "customer_request_email" ||
+    String(draft?.type || artifact?.type || "")
+      .trim()
+      .toLowerCase() === "email_draft"
+  );
+};
+
 
 const fileNameFromS3Path = (s3Path = "", fallback = "assessment-report.pdf") => {
   const clean = String(s3Path || "").trim();
@@ -5324,6 +5446,7 @@ const FormEditorCard = ({
   onNotifyCustomerSelected,
   saving,
   generatingEmailDraft,
+  emailDraftGenerated = false,
   saveMsg,
 }) => {
   if (!formDraft) return null;
@@ -5979,7 +6102,9 @@ const FormEditorCard = ({
               <div className="premiumFormFooterSub">
                 {formReady
                   ? notifyCustomer
-                    ? "Customer notification is enabled. Click Generate Email Draft when ready."
+                    ? emailDraftGenerated
+                      ? "Customer email draft has already been generated for this request."
+                      : "Customer notification is enabled. Click Generate Email Draft when ready."
                     : "Review the summary and save this request."
                   : `${missingRequired.length} required field${
                       missingRequired.length > 1 ? "s are" : " is"
@@ -6005,9 +6130,18 @@ const FormEditorCard = ({
                   type="button"
                   className="formSaveBtn premiumFormSaveBtn"
                   onClick={onGenerateEmailDraft}
-                  disabled={saving || generatingEmailDraft || !formReady}
+                  disabled={
+                    saving ||
+                    generatingEmailDraft ||
+                    emailDraftGenerated ||
+                    !formReady
+                  }
                 >
-                  {generatingEmailDraft ? "Generating..." : "Generate Email Draft"}
+                  {generatingEmailDraft
+                    ? "Generating..."
+                    : emailDraftGenerated
+                    ? "Email Draft Generated ✓"
+                    : "Generate Email Draft"}
                 </button>
               )}
             </div>
@@ -7337,6 +7471,108 @@ const CustomerRequestStepCard = ({
   );
 };
 
+const ReportDownloadedCloseDecisionCard = ({
+  requestId = "",
+  keptOpen = false,
+  closing = false,
+  closeActionAvailable = false,
+  onKeepOpen,
+  onCloseRequest,
+}) => {
+  return (
+    <div
+      style={{
+        width: "min(760px, 100%)",
+        border: "1px solid #dbe5f0",
+        borderRadius: "16px",
+        background: "#ffffff",
+        boxShadow: "0 8px 24px rgba(15, 23, 42, 0.06)",
+        overflow: "hidden",
+      }}
+    >
+      <div style={{ padding: "18px 20px 14px" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+            marginBottom: "8px",
+          }}
+        >
+          <CheckCircle2 size={20} aria-hidden="true" />
+          <div
+            style={{
+              fontSize: "16px",
+              fontWeight: 700,
+              color: "#172033",
+            }}
+          >
+            Customer downloaded the report
+          </div>
+        </div>
+
+        <div
+          style={{
+            fontSize: "14px",
+            lineHeight: 1.55,
+            color: "#5b6474",
+          }}
+        >
+          {keptOpen
+            ? "Request kept open. You can close it later when engineering review is complete."
+            : "The customer has downloaded the report at least once. Do you want to close this request?"}
+        </div>
+
+        {requestId ? (
+          <div
+            style={{
+              marginTop: "8px",
+              fontSize: "12px",
+              color: "#7b8494",
+            }}
+          >
+            {requestId}
+          </div>
+        ) : null}
+      </div>
+
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "flex-end",
+          gap: "10px",
+          padding: "14px 20px 18px",
+          borderTop: "1px solid #edf1f6",
+        }}
+      >
+        <button
+          type="button"
+          className="premiumGhostBtn"
+          onClick={onKeepOpen}
+          disabled={closing || keptOpen}
+        >
+          {keptOpen ? "Kept Open" : "Keep Open"}
+        </button>
+
+        <button
+          type="button"
+          className="formSaveBtn premiumFormSaveBtn"
+          onClick={onCloseRequest}
+          disabled={closing || !closeActionAvailable}
+          title={
+            closeActionAvailable
+              ? "Close this request"
+              : "Backend close-request action still needs to be connected"
+          }
+        >
+          {closing ? "Closing..." : "Close Request"}
+        </button>
+      </div>
+    </div>
+  );
+};
+
+
 const ChatWindow = ({
   chat,
   updateMessages,
@@ -7355,6 +7591,8 @@ const ChatWindow = ({
   isCustomerRequestStarterSession,
   customerRequestSuggestions,
   onOpenExistingCustomerRequest,
+  onCloseRequest,
+  isSessionLoading = false,
 }) => {
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
@@ -7368,6 +7606,9 @@ const ChatWindow = ({
   const [formDraft, setFormDraft] = useState(null);
   const [savingForm, setSavingForm] = useState(false);
   const [generatingEmailDraft, setGeneratingEmailDraft] = useState(false);
+  const [emailDraftGeneratedSessionIds, setEmailDraftGeneratedSessionIds] =
+    useState(() => new Set());
+  const emailDraftGenerationInFlightRef = useRef(new Set());
   const [formSaveMsg, setFormSaveMsg] = useState("");
   const [formInsertIndex, setFormInsertIndex] = useState(null);
 
@@ -7384,9 +7625,16 @@ const ChatWindow = ({
   const [processingCustomerReply, setProcessingCustomerReply] = useState(false);
   const [submittingEmailReview, setSubmittingEmailReview] = useState(false);
 
+  // Report downloaded -> engineer decides whether to keep open or close.
+  // This is UI state only; persisted closure must come from the backend callback.
+  const [reportCloseDecisionBySession, setReportCloseDecisionBySession] =
+    useState({});
+  const [closingDownloadedReportRequest, setClosingDownloadedReportRequest] =
+    useState(false);
+
   // Real backend request status used by the workflow fulfillment bar.
-  // This is refreshed from Customer Request Store so the bar does not depend only
-  // on old chat text like "REQUEST-CONFIRMED".
+  // Chat.jsx provides this from the initial backend load and realtime delta sync,
+  // so the bar does not depend only on old chat text like "REQUEST-CONFIRMED".
   const [currentRequestStatusOverride, setCurrentRequestStatusOverride] = useState("");
 
   // Engineering Supplier Task: the sidebar/card can contain an old task snapshot.
@@ -7403,6 +7651,18 @@ const ChatWindow = ({
   const visibleMessageCountRef = useRef(0);
   const customerRequestSearchSeqRef = useRef(0);
   const supplierTaskAutoLoadedRef = useRef(new Set());
+
+  // Keep the latest parent updater without making the monitoring effect depend
+  // on the inline callback identity supplied by Chat.jsx.
+  const updateMessagesRef = useRef(updateMessages);
+  updateMessagesRef.current = updateMessages;
+
+  // React StrictMode can run effects twice in development. Reuse an in-flight
+  // /status request so the monitoring dashboard does not make duplicate calls.
+  const requestMonitoringRequestRef = useRef({
+    key: "",
+    promise: null,
+  });
 
   // Prevent duplicate email submissions caused by repeated clicks or slow network.
   const emailSendInFlightRef = useRef(new Set());
@@ -7462,6 +7722,128 @@ const ChatWindow = ({
     );
   }, [chat?.id, chat?.title]);
 
+  // Request Monitoring loads only the dedicated lightweight GET /status
+  // response. Chat.jsx skips /initialise for this launcher.
+  useEffect(() => {
+    if (!isRequestMonitoringSession) return;
+
+    let cancelled = false;
+    const sessionKey = String(
+      chat?.id || "request monitoring & status"
+    )
+      .trim()
+      .toLowerCase();
+
+    const publishMonitoringMessages = (nextMessages) => {
+      if (cancelled) return;
+      if (typeof updateMessagesRef.current !== "function") return;
+
+      updateMessagesRef.current(() => nextMessages);
+    };
+
+    publishMonitoringMessages([
+      {
+        id: "request-monitoring-loading",
+        sender: "bot",
+        role: "assistant",
+        text: "Loading request monitoring dashboard...",
+        content: "Loading request monitoring dashboard...",
+        attachments: [],
+      },
+    ]);
+
+    const loadRequestMonitoringStatus = async () => {
+      let requestPromise = null;
+
+      try {
+        const token = await getAccessToken();
+        if (!token) {
+          throw new Error("Unable to load request monitoring: missing access token.");
+        }
+
+        const currentRequest = requestMonitoringRequestRef.current;
+
+        if (
+          currentRequest?.key === sessionKey &&
+          currentRequest?.promise
+        ) {
+          requestPromise = currentRequest.promise;
+        } else {
+          requestPromise = getRequestMonitoringStatus(token);
+          requestMonitoringRequestRef.current = {
+            key: sessionKey,
+            promise: requestPromise,
+          };
+        }
+
+        const response = await requestPromise;
+        if (cancelled) return;
+
+        const items = Array.isArray(response?.items)
+          ? response.items
+          : [];
+
+        const dashboardText =
+          buildRequestMonitoringDashboardText(items);
+
+        publishMonitoringMessages([
+          {
+            id: "request-monitoring-dashboard",
+            sender: "bot",
+            role: "assistant",
+            text: dashboardText,
+            content: dashboardText,
+            attachments: [],
+            artifact: {
+              type: "request_monitoring_dashboard",
+              items,
+              count:
+                Number.isFinite(Number(response?.count))
+                  ? Number(response.count)
+                  : items.length,
+            },
+          },
+        ]);
+      } catch (error) {
+        console.error("Request monitoring status load failed:", error);
+
+        publishMonitoringMessages([
+          {
+            id: "request-monitoring-error",
+            sender: "bot",
+            role: "assistant",
+            text:
+              "Unable to load the Request Monitoring Dashboard. " +
+              (error?.message || "Please try again."),
+            content:
+              "Unable to load the Request Monitoring Dashboard. " +
+              (error?.message || "Please try again."),
+            attachments: [],
+          },
+        ]);
+      } finally {
+        const currentRequest = requestMonitoringRequestRef.current;
+
+        if (
+          requestPromise &&
+          currentRequest?.key === sessionKey &&
+          currentRequest?.promise === requestPromise
+        ) {
+          requestMonitoringRequestRef.current = {
+            key: sessionKey,
+            promise: null,
+          };
+        }
+      }
+    };
+
+    loadRequestMonitoringStatus();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isRequestMonitoringSession, chat?.id]);
+
   const isEngineerProfile = useMemo(() => isEngineeringProfileUser(user), [user]);
 
   const isActiveSupplierTaskSession = useMemo(() => {
@@ -7519,6 +7901,7 @@ const ChatWindow = ({
     setCustomerReplyBody("");
     setProcessingCustomerReply(false);
     setSubmittingEmailReview(false);
+    setClosingDownloadedReportRequest(false);
     setCurrentRequestStatusOverride("");
     setSupplierTaskReviewLoadingKey("");
 
@@ -7924,6 +8307,15 @@ const ChatWindow = ({
     [cleanedMessages, getPreferredCustomerEmail]
   );
 
+  const hasPersistedCustomerRequestEmailDraft = useMemo(
+    () => normalizedMessages.some((message) => isCustomerRequestEmailDraftMessage(message)),
+    [normalizedMessages]
+  );
+
+  const activeEmailDraftAlreadyGenerated =
+    hasPersistedCustomerRequestEmailDraft ||
+    emailDraftGeneratedSessionIds.has(String(chat?.id || "").trim());
+
   const visibleMessages = useMemo(
     () => buildDisplayMessagesWithReportDeliveryAtEnd(normalizedMessages),
     [normalizedMessages]
@@ -8088,6 +8480,102 @@ const ChatWindow = ({
     chat?.requestMeta?.rawRequestStatus,
     chat?.requestMeta?.status,
   ]);
+
+  const hasReportDownloadedEvent = useMemo(
+    () =>
+      reportDeliveryVisibleMessages.some((message) => {
+        const eventType = getReportDeliveryEventType(message);
+        return (
+          eventType === "REPORT_DOWNLOADED" ||
+          eventType === "REPORT_FEEDBACK_SUBMITTED"
+        );
+      }),
+    [reportDeliveryVisibleMessages]
+  );
+
+  const activeReportDecisionSessionId = String(chat?.id || "").trim();
+  const activeReportDecisionRequestId =
+    extractRequestIdFromSessionId(activeReportDecisionSessionId);
+
+  const activeReportDecision =
+    reportCloseDecisionBySession[activeReportDecisionSessionId] || "";
+
+  const shouldShowReportCloseDecision =
+    isEngineerProfile &&
+    !isRequestMonitoringSession &&
+    hasReportDownloadedEvent &&
+    currentRequestStatus !== "REQUEST-CLOSED";
+
+  const handleKeepDownloadedReportOpen = () => {
+    if (!activeReportDecisionSessionId) return;
+
+    setReportCloseDecisionBySession((previous) => ({
+      ...previous,
+      [activeReportDecisionSessionId]: "KEEP_OPEN",
+    }));
+  };
+
+  const handleCloseDownloadedReportRequest = async () => {
+    if (
+      !activeReportDecisionSessionId ||
+      closingDownloadedReportRequest
+    ) {
+      return;
+    }
+
+    try {
+      setClosingDownloadedReportRequest(true);
+
+      const requestPayload = {
+        sessionId: activeReportDecisionSessionId,
+        requestId: activeReportDecisionRequestId,
+        userId: user?.email || "",
+      };
+
+      // Preserve support for a parent callback if one is supplied, but use the
+      // real Report Delivery API directly by default. This means Chat.jsx does
+      // not need another change just to connect the button.
+      let result;
+
+      if (typeof onCloseRequest === "function") {
+        result = await onCloseRequest(requestPayload);
+      } else {
+        const token = await getAccessToken();
+        result = await closeReportRequest(requestPayload, token);
+      }
+
+      if (result === false) return;
+
+      const closedStatus =
+        normalizeWorkflowStatus(
+          result?.workflowState ||
+            result?.requestStatus ||
+            result?.RequestStatus ||
+            result?.status ||
+            "REQUEST-CLOSED"
+        ) || "REQUEST-CLOSED";
+
+      setCurrentRequestStatusOverride(closedStatus);
+
+      setReportCloseDecisionBySession((previous) => ({
+        ...previous,
+        [activeReportDecisionSessionId]: "CLOSED",
+      }));
+
+      await refreshSidebar?.();
+      await refreshActiveRequestStatus();
+    } catch (error) {
+      console.error("Close request failed:", error);
+
+      addMessage({
+        sender: "bot",
+        role: "assistant",
+        text: `❌ ${error?.message || "Failed to close request"}`,
+      });
+    } finally {
+      setClosingDownloadedReportRequest(false);
+    }
+  };
 
   const shouldShowWorkflowFulfillmentBar = useMemo(() => {
     // Supplier task screen is not the customer request lifecycle screen.
@@ -8713,139 +9201,46 @@ const ChatWindow = ({
     [getWorkflowStatusFromCustomerRequestItem]
   );
 
-  const refreshActiveRequestStatus = useCallback(async () => {
-    const workingSessionId = getActiveSessionId();
-
-    if (!isCustomerRequestSession(workingSessionId) || !user?.email) {
-      return "";
-    }
-
-    const activeRequestId = extractRequestIdFromSessionId(workingSessionId);
-    if (!activeRequestId) return "";
-
-    try {
-      const token = await getAccessToken();
-      const res = await searchCustomerRequests(token, activeRequestId, "ALL");
-
-      const items = Array.isArray(res?.items)
-        ? res.items
-        : Array.isArray(res?.Items)
-        ? res.Items
-        : [];
-
-      const normalizeRequestIdForCompare = (value = "") =>
-        String(value || "").trim().toUpperCase();
-
-      const activeRequestKey = normalizeRequestIdForCompare(activeRequestId);
-
-      const matchedItem = items.find((item) => {
-        const itemSessionId = String(
-          item?.sessionId || item?.SessionId || ""
-        ).trim();
-        const itemRequestId = String(
-          item?.requestId || item?.RequestId || ""
-        ).trim();
-        const extractedItemRequestId =
-          extractRequestIdFromSessionId(itemSessionId);
-
-        return (
-          normalizeRequestIdForCompare(itemRequestId) === activeRequestKey ||
-          normalizeRequestIdForCompare(extractedItemRequestId) ===
-            activeRequestKey
-        );
-      });
-
-      // Never fall back to items[0] for workflow status. The backend remains
-      // the source of truth, but only the exact active request may update the
-      // timeline. A search response can contain multiple requests, and using
-      // the first row can incorrectly move the timeline back to REQUEST-CREATE.
-      if (!matchedItem) {
-        console.warn("[timeline-status] No exact active request match", {
-          workingSessionId,
-          activeRequestId,
-          returnedItems: items.length,
-          returnedRequestIds: items
-            .map((item) =>
-              String(item?.requestId || item?.RequestId || "").trim()
-            )
-            .filter(Boolean),
-        });
-        return "";
-      }
-
-      const status = getWorkflowStatusFromCustomerRequestItem(matchedItem);
-
-      console.log("[timeline-status] Exact backend request status", {
-        workingSessionId,
-        activeRequestId,
-        matchedSessionId:
-          matchedItem?.sessionId || matchedItem?.SessionId || "",
-        matchedRequestId:
-          matchedItem?.requestId || matchedItem?.RequestId || "",
-        backendRequestStatus:
-          matchedItem?.requestStatus ||
-          matchedItem?.RequestStatus ||
-          matchedItem?.status ||
-          matchedItem?.Status ||
-          "",
-        normalizedTimelineStatus: status || "",
-      });
-
-      if (status) {
-        setCurrentRequestStatusOverride(status);
-
-        setLiveCustomerRequestSuggestions((prev) =>
-          mergeUniqueRequestSuggestions(
-            [
-              {
-                ...(matchedItem || {}),
-                sessionId:
-                  matchedItem?.sessionId ||
-                  matchedItem?.SessionId ||
-                  workingSessionId,
-                requestId:
-                  matchedItem?.requestId ||
-                  matchedItem?.RequestId ||
-                  activeRequestId,
-                requestStatus: status,
-                rawRequestStatus: status,
-                status,
-                lastActivityAt: new Date().toISOString(),
-              },
-            ],
-            prev
-          )
-        );
-      }
-
-      return status;
-    } catch (e) {
-      console.warn("Failed to refresh active request status:", e);
-      return "";
-    }
-  }, [
-    getActiveSessionId,
-    getWorkflowStatusFromCustomerRequestItem,
-    isCustomerRequestSession,
-    user?.email,
-  ]);
-
+  // Realtime optimization:
+  // Chat.jsx now owns request freshness through initial /initialise plus
+  // WebSocket-triggered /sync-test. Mirror the latest parent request status here
+  // instead of polling /customer-request/search every 15 seconds.
   useEffect(() => {
     const workingSessionId = getActiveSessionId();
 
     if (!isCustomerRequestSession(workingSessionId)) {
       setCurrentRequestStatusOverride("");
-      return undefined;
+      return;
     }
 
-    refreshActiveRequestStatus();
+    const realtimeStatus = normalizeWorkflowStatus(
+      chat?.requestStatus ||
+        chat?.RequestStatus ||
+        chat?.requestMeta?.requestStatus ||
+        chat?.requestMeta?.RequestStatus ||
+        chat?.requestMeta?.rawRequestStatus ||
+        chat?.requestMeta?.RawRequestStatus ||
+        chat?.requestMeta?.status ||
+        chat?.requestMeta?.Status ||
+        ""
+    );
 
-    const timer = window.setInterval(() => {
-      refreshActiveRequestStatus();
-    }, 15000);
-
-    return () => window.clearInterval(timer);
-  }, [chat?.id, getActiveSessionId, isCustomerRequestSession, refreshActiveRequestStatus]);
+    if (realtimeStatus) {
+      setCurrentRequestStatusOverride(realtimeStatus);
+    }
+  }, [
+    chat?.id,
+    chat?.requestStatus,
+    chat?.RequestStatus,
+    chat?.requestMeta?.requestStatus,
+    chat?.requestMeta?.RequestStatus,
+    chat?.requestMeta?.rawRequestStatus,
+    chat?.requestMeta?.RawRequestStatus,
+    chat?.requestMeta?.status,
+    chat?.requestMeta?.Status,
+    getActiveSessionId,
+    isCustomerRequestSession,
+  ]);
 
   const handleFileSelect = async (file) => {
     const currentChatId = getActiveSessionId();
@@ -9244,6 +9639,20 @@ const ChatWindow = ({
     async (draftOverride = null, options = {}) => {
       if (!user?.email) return;
 
+      const requestedSessionId = String(getActiveSessionId() || "").trim();
+      if (!requestedSessionId) return;
+
+      // Prevent both a rapid double-click and another generation after success.
+      if (
+        emailDraftGenerationInFlightRef.current.has(requestedSessionId) ||
+        emailDraftGeneratedSessionIds.has(requestedSessionId) ||
+        hasPersistedCustomerRequestEmailDraft
+      ) {
+        return;
+      }
+
+      emailDraftGenerationInFlightRef.current.add(requestedSessionId);
+
       const { silentPrompt = false } = options;
 
       try {
@@ -9429,6 +9838,13 @@ const ChatWindow = ({
           toEmail: resolvedDraftToEmail,
         });
 
+        setEmailDraftGeneratedSessionIds((previous) => {
+          const next = new Set(previous);
+          if (requestedSessionId) next.add(requestedSessionId);
+          if (activeSessionId) next.add(activeSessionId);
+          return next;
+        });
+
         setFormSaveMsg("✅ Email draft generated");
       } catch (e) {
         console.error("Generate email draft failed:", e);
@@ -9440,6 +9856,7 @@ const ChatWindow = ({
           text: `❌ ${msg}`,
         });
       } finally {
+        emailDraftGenerationInFlightRef.current.delete(requestedSessionId);
         setGeneratingEmailDraft(false);
       }
     },
@@ -9447,6 +9864,8 @@ const ChatWindow = ({
       user?.email,
       chat?.id,
       formDraft,
+      emailDraftGeneratedSessionIds,
+      hasPersistedCustomerRequestEmailDraft,
       onFormStateChange,
       onFormDirtyChange,
       clearUnsavedFormDraft,
@@ -9470,7 +9889,6 @@ const ChatWindow = ({
       if (!currentChatId || !user?.email) return;
 
       setIsStartingCustomerRequest(true);
-      setIsTyping(true);
 
       const token = await getAccessToken();
 
@@ -9516,7 +9934,6 @@ const ChatWindow = ({
         text: "❌ Unable to start customer request flow. Please try again.",
       });
     } finally {
-      setIsTyping(false);
       setIsStartingCustomerRequest(false);
     }
   };
@@ -10796,6 +11213,7 @@ Next step: Waiting for the customer response. Once the reply is received, review
   const hasUploading = pendingAttachments.some((a) => a.uploading);
 
   const shouldShowWelcome =
+    !isSessionLoading &&
     !isActiveSupplierTaskSession &&
     !isCustomerRequestStarterSession &&
     (!cleanedMessages || cleanedMessages.length === 0);
@@ -10864,8 +11282,8 @@ Next step: Waiting for the customer response. Once the reply is received, review
 
   const emailReviewAssessmentStatus = useMemo(() => {
     // Prefer the immediate local response after a successful submit so the
-    // button changes state without waiting for the next poll. Backend status
-    // from /initialise remains the long-term source of truth.
+    // button changes state without waiting for the next realtime sync. Backend
+    // status from initial load / delta sync remains the long-term source of truth.
     return normalizeWorkflowStatus(
       currentRequestStatusOverride || currentRequestStatus || ""
     );
@@ -10952,6 +11370,7 @@ Next step: Waiting for the customer response. Once the reply is received, review
           }
           saving={savingForm}
           generatingEmailDraft={generatingEmailDraft}
+          emailDraftGenerated={activeEmailDraftAlreadyGenerated}
           saveMsg={formSaveMsg}
         />
       </div>
@@ -10985,12 +11404,14 @@ Next step: Waiting for the customer response. Once the reply is received, review
         </div>
       )}
 
-      {shouldShowWorkflowFulfillmentBar && !isRequestMonitoringSession && (
-        <WorkflowFulfillmentBar
-          requestStatus={currentRequestStatus}
-          workflowSections={workflowSections}
-        />
-      )}
+      {!isSessionLoading &&
+        shouldShowWorkflowFulfillmentBar &&
+        !isRequestMonitoringSession && (
+          <WorkflowFulfillmentBar
+            requestStatus={currentRequestStatus}
+            workflowSections={workflowSections}
+          />
+        )}
 
       <div
         className={`messages ${
@@ -11000,7 +11421,295 @@ Next step: Waiting for the customer response. Once the reply is received, review
         }`}
         ref={scrollRef}
       >
-        {shouldShowWelcome ? (
+        {isSessionLoading ? (
+          <div
+            role="status"
+            aria-live="polite"
+            aria-label="Loading request"
+            style={{
+              width: "100%",
+              minHeight: "62vh",
+              boxSizing: "border-box",
+              padding: "34px 28px 56px",
+              display: "flex",
+              justifyContent: "center",
+              alignItems: "flex-start",
+              animation: "requestLoaderEnter 180ms ease-out both",
+            }}
+          >
+            <div
+              style={{
+                width: "100%",
+                maxWidth: "900px",
+              }}
+            >
+              {/* Compact loading label - no large generic spinner */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "9px",
+                  marginBottom: "16px",
+                  paddingLeft: "2px",
+                }}
+              >
+                <span
+                  aria-hidden="true"
+                  style={{
+                    width: "8px",
+                    height: "8px",
+                    borderRadius: "999px",
+                    background: "currentColor",
+                    opacity: 0.72,
+                    animation: "requestLoaderDot 1.1s ease-in-out infinite",
+                    flex: "0 0 auto",
+                  }}
+                />
+                <span
+                  style={{
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    letterSpacing: "0.01em",
+                    opacity: 0.72,
+                  }}
+                >
+                  Loading request...
+                </span>
+              </div>
+
+              {/* Primary request card skeleton */}
+              <div
+                style={{
+                  border: "1px solid rgba(120, 120, 140, 0.14)",
+                  borderRadius: "20px",
+                  padding: "24px",
+                  background: "rgba(127, 127, 127, 0.025)",
+                  boxShadow: "0 10px 34px rgba(0, 0, 0, 0.035)",
+                }}
+              >
+                {/* Card heading + status */}
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "flex-start",
+                    gap: "24px",
+                    marginBottom: "18px",
+                  }}
+                >
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div
+                      className="request-loader-shimmer"
+                      style={{
+                        width: "120px",
+                        height: "9px",
+                        borderRadius: "999px",
+                        marginBottom: "11px",
+                      }}
+                    />
+                    <div
+                      className="request-loader-shimmer"
+                      style={{
+                        width: "52%",
+                        minWidth: "220px",
+                        maxWidth: "410px",
+                        height: "20px",
+                        borderRadius: "8px",
+                        marginBottom: "10px",
+                      }}
+                    />
+                    <div
+                      className="request-loader-shimmer"
+                      style={{
+                        width: "70%",
+                        maxWidth: "560px",
+                        height: "11px",
+                        borderRadius: "999px",
+                      }}
+                    />
+                  </div>
+
+                  <div
+                    className="request-loader-shimmer"
+                    style={{
+                      width: "92px",
+                      height: "28px",
+                      borderRadius: "999px",
+                      flex: "0 0 auto",
+                    }}
+                  />
+                </div>
+
+                <div
+                  style={{
+                    height: "1px",
+                    background: "rgba(120, 120, 140, 0.12)",
+                    margin: "18px 0",
+                  }}
+                />
+
+                {/* Request metadata skeleton */}
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+                    gap: "12px",
+                  }}
+                >
+                  {[1, 2, 3, 4].map((item) => (
+                    <div
+                      key={item}
+                      style={{
+                        border: "1px solid rgba(120, 120, 140, 0.11)",
+                        borderRadius: "14px",
+                        padding: "14px 16px",
+                        minHeight: "58px",
+                        background: "rgba(127, 127, 127, 0.018)",
+                      }}
+                    >
+                      <div
+                        className="request-loader-shimmer"
+                        style={{
+                          width: item % 2 ? "72px" : "92px",
+                          height: "8px",
+                          borderRadius: "999px",
+                          marginBottom: "11px",
+                        }}
+                      />
+                      <div
+                        className="request-loader-shimmer"
+                        style={{
+                          width: item === 2 ? "76%" : item === 3 ? "62%" : "68%",
+                          height: "12px",
+                          borderRadius: "999px",
+                        }}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Conversation / workflow card skeleton */}
+              <div
+                style={{
+                  marginTop: "16px",
+                  border: "1px solid rgba(120, 120, 140, 0.12)",
+                  borderRadius: "18px",
+                  padding: "20px 22px",
+                  background: "rgba(127, 127, 127, 0.018)",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: "13px",
+                  }}
+                >
+                  <div
+                    className="request-loader-shimmer"
+                    style={{
+                      width: "34px",
+                      height: "34px",
+                      borderRadius: "10px",
+                      flex: "0 0 auto",
+                    }}
+                  />
+
+                  <div style={{ flex: 1, paddingTop: "2px" }}>
+                    <div
+                      className="request-loader-shimmer"
+                      style={{
+                        width: "34%",
+                        minWidth: "150px",
+                        height: "12px",
+                        borderRadius: "999px",
+                        marginBottom: "12px",
+                      }}
+                    />
+                    <div
+                      className="request-loader-shimmer"
+                      style={{
+                        width: "92%",
+                        height: "10px",
+                        borderRadius: "999px",
+                        marginBottom: "9px",
+                      }}
+                    />
+                    <div
+                      className="request-loader-shimmer"
+                      style={{
+                        width: "74%",
+                        height: "10px",
+                        borderRadius: "999px",
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <style>
+                {`
+                  .request-loader-shimmer {
+                    background:
+                      linear-gradient(
+                        90deg,
+                        rgba(120, 120, 140, 0.07) 0%,
+                        rgba(120, 120, 140, 0.15) 45%,
+                        rgba(120, 120, 140, 0.08) 65%,
+                        rgba(120, 120, 140, 0.07) 100%
+                      );
+                    background-size: 220% 100%;
+                    animation: requestLoaderShimmer 1.35s ease-in-out infinite;
+                  }
+
+                  @keyframes requestLoaderShimmer {
+                    0% {
+                      background-position: 200% 0;
+                    }
+                    100% {
+                      background-position: -20% 0;
+                    }
+                  }
+
+                  @keyframes requestLoaderDot {
+                    0%, 100% {
+                      opacity: 0.28;
+                      transform: scale(0.82);
+                    }
+                    50% {
+                      opacity: 0.78;
+                      transform: scale(1);
+                    }
+                  }
+
+                  @keyframes requestLoaderEnter {
+                    from {
+                      opacity: 0;
+                      transform: translateY(4px);
+                    }
+                    to {
+                      opacity: 1;
+                      transform: translateY(0);
+                    }
+                  }
+
+                  @media (max-width: 720px) {
+                    .messages .request-loader-shimmer {
+                      max-width: 100%;
+                    }
+                  }
+
+                  @media (prefers-reduced-motion: reduce) {
+                    .request-loader-shimmer {
+                      animation: none !important;
+                    }
+                  }
+                `}
+              </style>
+            </div>
+          </div>
+        ) : shouldShowWelcome ? (
           <div className="welcome-screen">
             <h1 className="welcome-title">What are you working on?</h1>
           </div>
@@ -11271,6 +11980,21 @@ Next step: Waiting for the customer response. Once the reply is received, review
                 </React.Fragment>
               );
             })}
+
+            {shouldShowReportCloseDecision && (
+              <div className="msg-row bot">
+                <div className="msg-bubble">
+                  <ReportDownloadedCloseDecisionCard
+                    requestId={activeReportDecisionRequestId}
+                    keptOpen={activeReportDecision === "KEEP_OPEN"}
+                    closing={closingDownloadedReportRequest}
+                    closeActionAvailable={true}
+                    onKeepOpen={handleKeepDownloadedReportOpen}
+                    onCloseRequest={handleCloseDownloadedReportRequest}
+                  />
+                </div>
+              </div>
+            )}
 
             {timelineMessages.length === 0 && shouldRenderFormAtEnd
               ? renderFormMessageRow("inline-form-empty-end")
